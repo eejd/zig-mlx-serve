@@ -41489,7 +41489,7 @@ fn fusedSigmoidGateMul(s: mlx.mlx_stream, x: mlx.mlx_array, g: mlx.mlx_array, he
 /// Gemma PLE tail at decode: `y = W_proj · (gelu(g) * ple)` in one dispatch.
 /// The activation is the table lookup + one multiply; the matmul is MLX's own
 /// `qmv` (4-bit, group 64, K = 256 = one block, the "remaining" arm) written
-/// out op for op — the bf16 partial sums of `load_vector`, the masked-nibble
+/// out op for op — the float partial sums of `load_vector`, the masked-nibble
 /// products of `qdot`, `scale * accum + sum * bias`, `simd_sum`, one rounding
 /// — so it is bit-identical to `quantized_matmul` (pinned by the
 /// `fused gelu-ple projection` test). Threadgroup = MLX's (32, 2): 8 rows.
@@ -41510,7 +41510,7 @@ const GELU_PLE_PROJ_SOURCE =
     \\float xt2[8];
     \\float sum2 = 0;
     \\for (int i = 0; i < 8; i += 4) {
-    \\  sum2 += x2[i] + x2[i + 1] + x2[i + 2] + x2[i + 3];
+    \\  sum2 += float(x2[i]) + float(x2[i + 1]) + float(x2[i + 2]) + float(x2[i + 3]);
     \\  xt2[i] = x2[i];
     \\  xt2[i + 1] = x2[i + 1] / 16.0f;
     \\  xt2[i + 2] = x2[i + 2] / 256.0f;
@@ -43253,7 +43253,7 @@ const MSV_QMV_ROWS_SOURCE =
     \\  U sum = 0;
     \\  if (BITS == 3) {
     \\    for (int i = 0; i < values_per_thread; i += 8) {
-    \\      sum += xp[i] + xp[i + 1] + xp[i + 2] + xp[i + 3] + xp[i + 4] + xp[i + 5] + xp[i + 6] + xp[i + 7];
+    \\      sum += U(xp[i]) + U(xp[i + 1]) + U(xp[i + 2]) + U(xp[i + 3]) + U(xp[i + 4]) + U(xp[i + 5]) + U(xp[i + 6]) + U(xp[i + 7]);
     \\      x_thread[i] = xp[i];
     \\      x_thread[i + 1] = xp[i + 1] / 8.0f;
     \\      x_thread[i + 2] = xp[i + 2] / 64.0f;
@@ -43265,7 +43265,7 @@ const MSV_QMV_ROWS_SOURCE =
     \\    }
     \\  } else if (BITS == 4) {
     \\    for (int i = 0; i < values_per_thread; i += 4) {
-    \\      sum += xp[i] + xp[i + 1] + xp[i + 2] + xp[i + 3];
+    \\      sum += U(xp[i]) + U(xp[i + 1]) + U(xp[i + 2]) + U(xp[i + 3]);
     \\      x_thread[i] = xp[i];
     \\      x_thread[i + 1] = xp[i + 1] / 16.0f;
     \\      x_thread[i + 2] = xp[i + 2] / 256.0f;
@@ -43273,7 +43273,7 @@ const MSV_QMV_ROWS_SOURCE =
     \\    }
     \\  } else if (BITS == 5) {
     \\    for (int i = 0; i < values_per_thread; i += 8) {
-    \\      sum += xp[i] + xp[i + 1] + xp[i + 2] + xp[i + 3] + xp[i + 4] + xp[i + 5] + xp[i + 6] + xp[i + 7];
+    \\      sum += U(xp[i]) + U(xp[i + 1]) + U(xp[i + 2]) + U(xp[i + 3]) + U(xp[i + 4]) + U(xp[i + 5]) + U(xp[i + 6]) + U(xp[i + 7]);
     \\      x_thread[i] = xp[i];
     \\      x_thread[i + 1] = xp[i + 1] / 32.0f;
     \\      x_thread[i + 2] = xp[i + 2] / 4.0f;
@@ -43285,7 +43285,7 @@ const MSV_QMV_ROWS_SOURCE =
     \\    }
     \\  } else if (BITS == 6) {
     \\    for (int i = 0; i < values_per_thread; i += 4) {
-    \\      sum += xp[i] + xp[i + 1] + xp[i + 2] + xp[i + 3];
+    \\      sum += U(xp[i]) + U(xp[i + 1]) + U(xp[i + 2]) + U(xp[i + 3]);
     \\      x_thread[i] = xp[i];
     \\      x_thread[i + 1] = xp[i + 1] / 64.0f;
     \\      x_thread[i + 2] = xp[i + 2] / 16.0f;
@@ -43687,8 +43687,8 @@ const VERIFY_EXPERT_REUSE_SOURCE =
     \\    T a0 = x[p], a1 = x[p+1], a2 = x[p+2], a3 = x[p+3];
     \\    T b0 = T(0), b1 = T(0), b2 = T(0), b3 = T(0);
     \\    if (pair) { b0 = x[p+K]; b1 = x[p+K+1]; b2 = x[p+K+2]; b3 = x[p+K+3]; }
-    \\    sum.x += a0 + a1 + a2 + a3;
-    \\    sum.y += b0 + b1 + b2 + b3;
+    \\    sum.x += float(a0) + float(a1) + float(a2) + float(a3);
+    \\    sum.y += float(b0) + float(b1) + float(b2) + float(b3);
     \\    xt[i] = float2(float(a0), float(b0));
     \\    xt[i+1] = float2(float(a1), float(b1)) / 16.0f;
     \\    xt[i+2] = float2(float(a2), float(b2)) / 256.0f;
@@ -43740,7 +43740,7 @@ const VERIFY_PAIRED_GU_HEADER =
     \\inline float pgu_load(const device bfloat* x, thread float* xt) {
     \\  float sum = 0.0f;
     \\  for (int i = 0; i < 16; i += 4) {
-    \\    sum += x[i] + x[i + 1] + x[i + 2] + x[i + 3];
+    \\    sum += float(x[i]) + float(x[i + 1]) + float(x[i + 2]) + float(x[i + 3]);
     \\    xt[i] = x[i];
     \\    xt[i + 1] = x[i + 1] / 16.0f;
     \\    xt[i + 2] = x[i + 2] / 256.0f;
@@ -44113,11 +44113,11 @@ const MTP_COARSE_PAIRS_SOURCE =
     \\  for (uint i = 0; i < 16; i += 8) {
     \\    size_t at = size_t(row) * K + k + lane * 16 + i;
     \\    const device T* a = x + at;
-    \\    sum.x += a[0] + a[1] + a[2] + a[3] + a[4] + a[5] + a[6] + a[7];
+    \\    sum.x += float(a[0]) + float(a[1]) + float(a[2]) + float(a[3]) + float(a[4]) + float(a[5]) + float(a[6]) + float(a[7]);
     \\    float b[8] = {0,0,0,0,0,0,0,0};
     \\    if (pair) {
     \\      const device T* v = a + K;
-    \\      sum.y += v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7];
+    \\      sum.y += float(v[0]) + float(v[1]) + float(v[2]) + float(v[3]) + float(v[4]) + float(v[5]) + float(v[6]) + float(v[7]);
     \\      for (uint j = 0; j < 8; ++j) b[j] = float(v[j]);
     \\    }
     \\    xt[i] = float2(float(a[0]), b[0]);
