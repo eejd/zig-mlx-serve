@@ -10,8 +10,9 @@ const RPS = 4;
 
 /// MLX's `qmv_fast` loop (load_vector + qdot) at BITS 4, 6 or 8. A lane
 /// loads VPL inputs a block (16 at 4-bit, else 8), pre-divided so masked
-/// fields need no shift; the 4/6-bit sum adds each run of 4 in bf16 first, as
-/// MLX does on bfloat16_t, the 8-bit one adds each input in float. The tail of
+/// fields need no shift; the 4/6-bit sum adds each run of 4 in float (MLX's
+/// `U(x[i]) + ...`, since ml-explore/mlx#4516; it was bf16 on bfloat16_t
+/// before), as does the 8-bit one input by input. The tail of
 /// a K that is not a multiple of the 32 * VPL block runs one more chunk on the
 /// lanes below (K % block) / VPL. Reads nothing but its own row of x.
 pub const HEADER =
@@ -24,7 +25,7 @@ pub const HEADER =
     \\    constexpr float d1 = BITS == 4 ? 16.0f : 64.0f, d2 = BITS == 4 ? 256.0f : 16.0f, d3 = BITS == 4 ? 4096.0f : 4.0f;
     \\    for (int i = 0; i < (BITS == 4 ? 16 : 8); i += 4) {
     \\      const bfloat a = x[i], b = x[i + 1], c = x[i + 2], d = x[i + 3];
-    \\      sum += float(bfloat(float(bfloat(float(bfloat(float(a) + float(b))) + float(c))) + float(d)));
+    \\      sum += float(a) + float(b) + float(c) + float(d);
     \\      xt[i] = float(a); xt[i + 1] = float(b) / d1; xt[i + 2] = float(c) / d2; xt[i + 3] = float(d) / d3;
     \\    }
     \\  }
