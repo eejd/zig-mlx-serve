@@ -21,7 +21,7 @@ All four share an **adaptive prompt-time gate**: a 3-gram repetition score auto-
 
 ### Exactness versus plain decoding
 
-Speculative paths verify several tokens in one forward. A wider forward picks different Metal kernels than the one-token forward plain decoding uses, so when plain's top two logits are nearly tied the speculative path can pick the other one. Measured on Qwen3.5-4B-4bit with its 4-bit MTP head, temp 0, 28 prompts x up to 300 tokens, MLX 0.32.4 ([evidence, sections A1-A2](https://github.com/eejd/py-quantbench/blob/main/docs/evidence/spec-path-qwen35-4b-2026-10-17/README.md)):
+Speculative paths verify several tokens in one forward, and when plain's top two logits are nearly tied they can pick the other one. The suspected reason is that a wider forward uses different Metal kernels, and so different rounding, than the one-token forward plain decoding uses; that is `[INFERENCE]`, not established (below). Measured on Qwen3.5-4B-4bit with its 4-bit MTP head, temp 0, 28 prompts x up to 300 tokens, MLX 0.32.4 ([evidence, sections A1-A2](https://github.com/eejd/py-quantbench/blob/main/docs/evidence/spec-path-qwen35-4b-2026-10-17/README.md)):
 
 | path | generations that differ from plain | divergences per 1000 plain tokens (non-tool rows) |
 |---|---|---|

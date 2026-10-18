@@ -21,7 +21,7 @@ Apple M4 Max，每个引擎使用完全相同的权重。[benchmarks.md](../../b
 
 ### 与普通解码的一致性
 
-投机路径在一次前向中验证多个 Token。更宽的前向会选用与普通解码的单 Token 前向不同的 Metal 内核，因此当普通解码的前两名 logit 几乎打平时，投机路径可能选另一个。在 Qwen3.5-4B-4bit 及其 4-bit MTP 头上实测，temp 0，28 个提示 x 最多 300 个 Token，MLX 0.32.4（[证据，A1-A2 节](https://github.com/eejd/py-quantbench/blob/main/docs/evidence/spec-path-qwen35-4b-2026-10-17/README.md)）：
+投机路径在一次前向中验证多个 Token，当普通解码的前两名 logit 几乎打平时，它们可能选另一个。推测的原因是更宽的前向使用了与普通解码的单 Token 前向不同的 Metal 内核，因而舍入不同；这是 `[INFERENCE]`，尚未确定（见下）。在 Qwen3.5-4B-4bit 及其 4-bit MTP 头上实测，temp 0，28 个提示 x 最多 300 个 Token，MLX 0.32.4（[证据，A1-A2 节](https://github.com/eejd/py-quantbench/blob/main/docs/evidence/spec-path-qwen35-4b-2026-10-17/README.md)）：
 
 | 路径 | 与普通解码不同的生成数 | 每 1000 个普通解码 Token 的分歧数（非工具行） |
 |---|---|---|

@@ -62,13 +62,13 @@
 
 ## 我能在不同运行与设置之间得到逐字节相同的贪心输出吗？
 
-能，只要你关掉那些会合法地重排浮点数学的东西。投机解码在一次 forward 中校验多个 Token，而更宽的 forward 会挑到与单 Token forward 不同的 Metal kernel，所以接近平局的 argmax 可能翻转。这不是损坏，也不是种子问题（`seed` 在 temp 0 下不起作用）；这是每个推理服务引擎都具备的批宽特性。逐字节稳定的配方：
+能，只要你关掉那些会合法地重排浮点数学的东西。投机解码在一次 forward 中校验多个 Token，接近平局的 argmax 可能与普通解码相比翻转（已实测，见上）。推测的原因是更宽的 forward 会挑到与单 Token forward 不同的 Metal kernel（`[INFERENCE]`，尚未确定）。这不是损坏，也不是种子问题（`seed` 在 temp 0 下不起作用）。逐字节稳定的配方：
 
-- 关闭投机：请求里写 `enable_mtp: false`（或启动时加 `--no-mtp`），再加上 `--no-drafter`；若你开过 `--pld`，也要关掉
+- 关闭投机：请求里写 `enable_mtp: false` 与 `enable_pld: false`（或启动时加 `--no-mtp --no-pld`；PLD 默认开启，自身也会产生分歧），再加上 `--no-drafter`
 - `--kv-quant off` 或 `8`
 - 在混合架构上（Qwen 3.5/3.6/3.8、LFM2、Nemotron-H）：`--prefix-cache-entries 0`，因为缓存命中会用不同的块大小重跑递推
 
-如果你的测试门禁要求精确字符串匹配，就用这套配方跑。要让投机路径本身也逐字节相同，就意味着强制每个 kernel 的归约顺序与批宽无关，而这正是快速校验 kernel 换掉的东西。
+如果你的测试门禁要求精确字符串匹配，就用这套配方跑。目前没有让投机路径本身逐字节相同；若上述推测成立，那就意味着让每个 kernel 的归约顺序与批宽无关，而这正是快速校验 kernel 换掉的东西（eejd/zig-mlx-serve#4 的第二种解法，受阻于确定原因）。
 
 ## 我的数据去哪儿了？
 
