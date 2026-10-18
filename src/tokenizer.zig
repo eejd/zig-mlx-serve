@@ -43,13 +43,14 @@ fn isOutputOnlySpecial(content: []const u8, template_source: []const u8) bool {
     // the header the MODEL writes — `to=functions.x <|constrain|>json`. The
     // template renders tool calls only when replaying history, and omits it.
     if (std.mem.eql(u8, content, "<|constrain|>")) return true;
-    // Llama 3.1+ (3.1 / 3.2 / 3.3): with `Environment: ipython` in the system
+    // Llama 3.2 (verified; 3.1 / 3.3 share the template line, not verified):
+    // with `Environment: ipython` in the system
     // header (the template emits it whenever `tools` is set) the model opens
     // its tool call with `<|python_tag|>` and ends it with `<|eom_id|>`.
     // Replayed calls are rendered as bare JSON, so the template never writes
-    // the tag. Llama 3.0 and ChatML finetunes that inherited the token carry
-    // no `ipython` in their template and never learned to emit it: those stay
-    // masked.
+    // the tag. A checkpoint that carries the token in its vocabulary without
+    // that convention (Hermes-3 on the Llama-3.2 vocab: no `ipython` in its
+    // ChatML template) is not shown to emit it, so it stays masked.
     if (std.mem.eql(u8, content, "<|python_tag|>")) {
         return std.mem.indexOf(u8, template_source, "ipython") != null;
     }
@@ -3092,8 +3093,8 @@ test "reservedOutputIds: <|python_tag|> is exempt only under a Llama 3.1+ tool t
     // python_tag is reachable; every other reserved slot is still masked.
     try testing.expectEqualSlices(u32, &[_]u32{ 128011, 128012 }, ids);
 
-    // Llama 3.0 / ChatML-on-Llama-vocab (Hermes-3): same vocab, no `ipython`
-    // in the template, so the token was never trained as output and stays masked.
+    // ChatML-on-Llama-vocab (Hermes-3): same vocab, no `ipython` in the
+    // template, so the token is not exempt and stays masked.
     const chatml = "<|start_header_id|>{{ role }}<|eot_id|>";
     const masked = try reservedOutputIds(alloc, &flagged, chatml, &eos);
     defer alloc.free(masked);
