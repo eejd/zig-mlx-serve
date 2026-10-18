@@ -58,13 +58,13 @@ Zig with direct `mlx-c` FFI — no Python runtime, no Electron, no IPC bridge. T
 
 ## Is the inference exact, or quantized output drift?
 
-For greedy decoding (temp=0), mlx-serve is byte-identical to the reference for the first ~30-80 generated tokens, with the long-tail divergence inherent to INT4 float-reduction order (documented in `CLAUDE.md`). For temp > 0, the Leviathan probability-ratio sampler keeps speculative decoding mathematically exact in distribution. Equivalence is pinned by `tests/test_pld_equivalence.sh`, `test_drafter_equivalence.sh`, and `test_kv_quant_equivalence.sh`.
+For greedy decoding (temp=0), plain decoding (`--no-mtp --no-pld`) is bit-stable run to run. The speculative paths (MTP, PLD, drafters) emit the same argmax up to bf16 near-ties of the batched verify, which is not byte-identical: on Qwen3.5-4B-4bit, 34 % of 200-token generations differed from plain under the default MTP+PLD, 97 of 269 analysable divergent rows diverged before token 30, and every analysable flip was a near-tie of plain's own logits (gap <= 0.25 nats; the cause is `[INFERENCE]`, see [Exactness versus plain decoding](performance.md#exactness-versus-plain-decoding)). For temp > 0, the Leviathan probability-ratio sampler keeps speculative decoding exact in distribution as an algorithm; the sampled path has not been measured. `tests/test_pld_equivalence.sh`, `test_drafter_equivalence.sh`, and `test_kv_quant_equivalence.sh` check equivalence on their own prompt sets; they do not establish byte identity in general.
 
 ## Can I get byte-identical greedy output across runs and settings?
 
 Yes, if you turn off the things that legitimately reorder float math. Speculative decoding verifies several tokens in one forward, and a wider forward picks different Metal kernels than a one-token forward, so near-tie argmaxes can flip. That's not corruption and not a seed issue (`seed` does nothing at temp 0); it's the same batch-width property every serving engine has. The byte-stable recipe:
 
-- disable speculation: `enable_mtp: false` in the request (or launch with `--no-mtp`), plus `--no-drafter` and no `--pld` if you enabled those
+- disable speculation: `enable_mtp: false` and `enable_pld: false` in the request (or launch with `--no-mtp --no-pld`; PLD is on by default and diverges on its own), plus `--no-drafter`
 - `--kv-quant off` or `8`
 - on hybrid architectures (Qwen 3.5/3.6/3.8, LFM2, Nemotron-H): `--prefix-cache-entries 0`, since a cache hit re-runs the recurrence in a different block size
 

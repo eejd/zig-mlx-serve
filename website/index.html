@@ -2234,7 +2234,7 @@
       </details>
       <details class="faq-item">
         <summary>Is the inference exact, or quantized output drift?</summary>
-        <p>For greedy decoding (temp=0), mlx-serve is byte-identical to the reference for the first ~30-80 generated tokens, with long-tail divergence inherent to INT4 float-reduction order. For temp &gt; 0, the Leviathan probability-ratio sampler keeps speculative decoding mathematically exact in distribution. Equivalence is pinned by automated tests on every release.</p>
+        <p>For greedy decoding (temp=0), plain decoding is bit-stable run to run. Speculative paths (MTP, PLD, drafters) emit the same argmax up to bf16 near-ties of the batched verify, which is not byte-identical: on Qwen3.5-4B-4bit 34% of 200-token generations differed from plain, each analysable flip a near-tie of at most 0.25 nats. For temp &gt; 0, the Leviathan probability-ratio sampler keeps speculative decoding exact in distribution as an algorithm; the sampled path is not yet measured.</p>
       </details>
       <details class="faq-item">
         <summary>Can mlx-serve generate images, video, and audio locally?</summary>

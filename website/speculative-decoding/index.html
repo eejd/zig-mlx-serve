@@ -36,7 +36,7 @@
       {
         "@type": "Question",
         "name": "Does speculative decoding change the model's output?",
-        "acceptedAnswer": { "@type": "Answer", "text": "No — that's the defining property. Drafted tokens are verified by the target model itself: at temperature 0 output is byte-identical over the verification window, and at temperature > 0 the Leviathan probability-ratio sampler keeps the output distribution mathematically exact. Equivalence is pinned by automated byte-comparison tests on every release." }
+        "acceptedAnswer": { "@type": "Answer", "text": "Drafted tokens are verified by the target model itself. At temperature 0 the output has the same argmax as plain decoding up to bf16 near-ties of the batched verify (not byte-identical: on Qwen3.5-4B-4bit 34% of 200-token generations differ, every analysable flip a near-tie of at most 0.25 nats; bit-exact only with speculation off). At temperature > 0 the Leviathan probability-ratio sampler keeps the output distribution exact as an algorithm; the sampled path is not yet measured." }
       },
       {
         "@type": "Question",
@@ -117,7 +117,7 @@
     <div class="hero-f-glow"><span class="g1"></span><span class="g2"></span></div>
     <div class="crumbs"><a href="../">mlx-serve</a><span class="sep">/</span><span class="here">Deep dive · Speculative decoding</span></div>
     <h1>Same output.<br><span class="grad">Just faster.</span></h1>
-    <p class="hero-f-sub">Four speculation engines draft tokens ahead and let the model <b>verify them exactly</b> — byte-identical greedy output, mathematically exact sampling. Up to <b>2.1×</b> on the workloads local models actually run.</p>
+    <p class="hero-f-sub">Four speculation engines draft tokens ahead and let the model <b>verify them exactly</b> — the target model's greedy argmax up to bf16 near-ties, exact sampling in distribution. Up to <b>2.1×</b> on the workloads local models actually run.</p>
     <div class="hero-ctas">
       <a href="https://github.com/ddalcu/mlx-serve/releases/latest/download/MLX-Serve.dmg" class="btn btn-primary">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -196,12 +196,12 @@
       <div class="split-copy reveal">
         <span class="split-kicker">Exactness</span>
         <h3>Speed you don't have to distrust</h3>
-        <p>Speculation never changes what the model would have said. Every drafted token is verified against the target model's own distribution: rejected drafts are resampled correctly, so greedy output is <b>byte-identical</b> and sampled output is <b>exact in distribution</b> (the Leviathan probability-ratio method).</p>
-        <p>This isn't a claim, it's a test suite: byte-equivalence checks for PLD, the drafter, and MTP run against every release — including with tools active and across streaming and non-streaming paths.</p>
+        <p>Speculation never changes what the model would have said. Every drafted token is verified against the target model's own distribution: rejected drafts are resampled correctly, so greedy output keeps the target model's argmax up to bf16 near-ties of the batched verify (not byte-identical to plain decoding; measured on Qwen3.5-4B-4bit: 34% of 200-token generations differ, every analysable flip a near-tie of at most 0.25 nats) and sampled output is exact in distribution as an algorithm (the Leviathan probability-ratio method; the sampled path is not yet measured).</p>
+        <p>Equivalence checks for PLD, the drafter, and MTP run against every release — including with tools active and across streaming and non-streaming paths. Tool-call generations matched plain decoding in 210 of 210 measured runs.</p>
       </div>
       <div class="split-visual reveal">
         <ul class="ticks">
-          <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>temp = 0</b> — byte-identical output, pinned by regression tests.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>temp = 0</b> — same argmax as plain decoding up to bf16 near-ties; bit-exact only with speculation off.</span></li>
           <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>temp &gt; 0</b> — mathematically exact output distribution.</span></li>
           <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>Tools on</b> — agent loops are speculation's best workload, not an excluded case.</span></li>
         </ul>
@@ -258,7 +258,7 @@
     <div class="faq-wrap reveal">
       <details class="faq-item">
         <summary>Does it change the model's output?</summary>
-        <p>No. Drafts are verified by the target model itself — greedy decoding is byte-identical over the verification window, and sampling is mathematically exact in distribution. Byte-equivalence suites for all four engines run on every release.</p>
+        <p>No. Drafts are verified by the target model itself — greedy decoding keeps the same argmax up to bf16 near-ties of the batched verify (not byte-identical to plain decoding; bit-exact only with speculation off), and sampling is exact in distribution as an algorithm. Equivalence suites for all four engines run on every release.</p>
       </details>
       <details class="faq-item">
         <summary>Which engine should I use?</summary>

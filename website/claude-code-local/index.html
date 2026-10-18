@@ -251,7 +251,7 @@
       <div class="split-copy reveal">
         <span class="split-kicker">Speculative decoding</span>
         <h3>~2× on the edits themselves</h3>
-        <p>File-edit tool calls echo existing code back with small changes — speculative decoding's best case. With tools active (every Claude Code request), <a class="prose-link" href="../speculative-decoding/">PLD and the Gemma 4 drafter</a> decode edit loops at roughly 2× (72 → 150 tok/s measured on Gemma 4 E4B), with byte-identical output. Qwen 3.6 checkpoints with a native MTP sidecar hit up to 1.8× on agent turns automatically.</p>
+        <p>File-edit tool calls echo existing code back with small changes — speculative decoding's best case. With tools active (every Claude Code request), <a class="prose-link" href="../speculative-decoding/">PLD and the Gemma 4 drafter</a> decode edit loops at roughly 2× (72 → 150 tok/s measured on Gemma 4 E4B), with the same argmax as plain decoding up to bf16 near-ties. Qwen 3.6 checkpoints with a native MTP sidecar hit up to 1.8× on agent turns automatically.</p>
       </div>
       <div class="split-visual reveal">
         <ul class="ticks">

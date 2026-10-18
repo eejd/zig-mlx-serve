@@ -58,7 +58,7 @@
 
 ## 推理是精确的，还是有量化输出漂移？
 
-对贪心解码（temp=0），mlx-serve 在前约 30-80 个生成的 Token 上与参考实现逐字节相同，之后是 INT4 浮点归约顺序固有的长尾分歧（记录在 `CLAUDE.md` 中）。对 temp > 0，Leviathan 概率比采样器让投机解码在分布上数学精确。等价性由 `tests/test_pld_equivalence.sh`、`test_drafter_equivalence.sh` 与 `test_kv_quant_equivalence.sh` 钉住。
+对贪心解码（temp=0），普通解码（`--no-mtp --no-pld`）每次运行结果逐位稳定。投机路径（MTP、PLD、草稿模型）给出的 argmax 与普通解码相同，但批量验证的 bf16 近似平局除外，并非逐字节相同：在 Qwen3.5-4B-4bit 上，默认 MTP+PLD 下 34 % 的 200 Token 生成与普通解码不同，269 个可分析分歧行中有 97 行在第 30 个 Token 之前分歧，且每个可分析的翻转都是普通解码自身 logit 的近似平局（差距 <= 0.25 nat；原因为 `[INFERENCE]`，见[与普通解码的一致性](performance.md#与普通解码的一致性)）。对 temp > 0，Leviathan 概率比采样器让投机解码在算法上分布精确；采样路径尚未实测。`tests/test_pld_equivalence.sh`、`test_drafter_equivalence.sh` 与 `test_kv_quant_equivalence.sh` 在各自的提示集上检查等价性，并不能证明一般意义上的逐字节相同。
 
 ## 我能在不同运行与设置之间得到逐字节相同的贪心输出吗？
 

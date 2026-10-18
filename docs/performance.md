@@ -10,7 +10,7 @@ Apple M4 Max, identical weights per engine. [benchmarks.md](../benchmarks.md) tr
 
 ## Speculative decoding
 
-Four flavors, all greedy-equivalent (byte-identical at temp=0 within the first 30 tokens; mathematically exact at temp > 0 via the Leviathan probability-ratio sampler):
+Four flavors. At temp=0 each emits the same argmax as plain decoding **up to bf16 near-ties of the batched verify**; it is *not* byte-identical to plain decoding, not even within the first 30 tokens (see [Exactness versus plain decoding](#exactness-versus-plain-decoding)). At temp > 0 the Leviathan probability-ratio sampler makes the method exact in distribution (the sampled path has not been measured, so that is the algorithm's property, not a measured one):
 
 - **Native MTP** (Qwen 3.5/3.6/3.8) — checkpoints with a trained multi-token-prediction head (sidecar or baked in, like the Qwen 3.8 27B build) draft with the model's *own* head, with a controller that self-tunes depth per request. MoE sidecars supported. Auto-loads, zero setup.
 - **DFlash draft companions** — a model folder can ship its own `drafter/` block-draft companion (the Muse-Glimmer builds do); the server loads it with the model, switching models keeps the speedup, and the draft size adapts to the Mac. About 2x on Muse-Glimmer. `--no-drafter` turns it off.
@@ -18,6 +18,22 @@ Four flavors, all greedy-equivalent (byte-identical at temp=0 within the first 3
 - **Gemma 4 assistant drafter** — Google's small 4-layer cross-attention drafters, opt-in via `--drafter <dir>`. Cross-attends into the target's KV cache, so no weights are duplicated.
 
 All four share an **adaptive prompt-time gate**: a 3-gram repetition score auto-disables speculation on novel content, so creative writing and one-shot Q&A run at parity instead of paying verify overhead. A **runtime acceptance gate** disables speculation mid-decode if per-draft acceptance falls below break-even, sticky for the rest of the request. Both apply across all four API surfaces, streaming and non-streaming, including requests with tools. Agentic tool loops are speculative decoding's best workload.
+
+### Exactness versus plain decoding
+
+Speculative paths verify several tokens in one forward. A wider forward picks different Metal kernels than the one-token forward plain decoding uses, so when plain's top two logits are nearly tied the speculative path can pick the other one. Measured on Qwen3.5-4B-4bit with its 4-bit MTP head, temp 0, 28 prompts x up to 300 tokens, MLX 0.32.4 ([evidence, sections A1-A2](https://github.com/eejd/py-quantbench/blob/main/docs/evidence/spec-path-qwen35-4b-2026-10-17/README.md)):
+
+| path | generations that differ from plain | divergences per 1000 plain tokens (non-tool rows) |
+|---|---|---|
+| MTP + PLD (default, adaptive depth), `26.10.2-local01` | 47 of 140 (34 %) | 4.6 |
+| PLD only | 6 of 28 (21 %) | 2.2 |
+| plain (`--no-mtp --no-pld`) vs itself, across repeats and processes | 0 of 28 | - |
+
+- **Early divergence is real.** Of the 269 analysable divergent rows, 97 diverge before token 30 (5 of the 31 distinct flips), so the earlier "byte-identical within the first 30 tokens" does not hold on this model.
+- **Every analysable flip is a near-tie of plain's own logits.** The gap from plain's top-1 to the token the speculative path emitted is at most 0.25 nats (31 distinct flips; 6 exact ties) and the emitted token is plain's rank 2 (30 flips) or rank 3 (1 flip): a different phrasing of equal plausibility, not corruption. The 18 divergent rows of the two thinking prompts could not be sized (no log-probs for reasoning tokens).
+- **Tool calls were not affected:** all 210 tool-prompt generations (7 prompts, both builds, every depth) were identical to plain, and echo-heavy prompts 0 of 90. Tool generations are short and high-confidence.
+- **Cause: `[INFERENCE]`.** The observed gaps are multiples of 0.0625, one bf16 step of a logit, which fits the bf16 batched-verify explanation; hybrid-GatedDeltaNet state replay is a competing explanation the data do not exclude. Not established (eejd/py-quantbench#194). Measured on one model; other models are not covered.
+- **Bit-exact versus plain only with speculation off:** `--no-mtp --no-pld` (plus `--no-drafter`). The recipe is in the [FAQ](faq.md#can-i-get-byte-identical-greedy-output-across-runs-and-settings). Do not gate tests on exact-string equality between speculation on and off.
 
 ## Long context
 
