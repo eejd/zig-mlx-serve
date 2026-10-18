@@ -34,12 +34,26 @@ pub const FlaggedSpecial = struct { id: u32, content: []const u8 };
 /// worse than a missing token.
 ///
 /// Kept to markers that are unambiguous across families, since this is the one
-/// place the derivation is overridden by name.
-fn isOutputOnlySpecial(content: []const u8) bool {
+/// place the derivation is overridden by name. A marker that only ONE
+/// convention emits is exempt only when the chat template shows that
+/// convention (`template_source`), so a checkpoint that merely inherits the
+/// token in its vocabulary keeps it reserved.
+fn isOutputOnlySpecial(content: []const u8, template_source: []const u8) bool {
     // harmony (gpt_oss): declares a tool call's argument content type inside
     // the header the MODEL writes — `to=functions.x <|constrain|>json`. The
     // template renders tool calls only when replaying history, and omits it.
-    return std.mem.eql(u8, content, "<|constrain|>");
+    if (std.mem.eql(u8, content, "<|constrain|>")) return true;
+    // Llama 3.1+ (3.1 / 3.2 / 3.3): with `Environment: ipython` in the system
+    // header (the template emits it whenever `tools` is set) the model opens
+    // its tool call with `<|python_tag|>` and ends it with `<|eom_id|>`.
+    // Replayed calls are rendered as bare JSON, so the template never writes
+    // the tag. Llama 3.0 and ChatML finetunes that inherited the token carry
+    // no `ipython` in their template and never learned to emit it: those stay
+    // masked.
+    if (std.mem.eql(u8, content, "<|python_tag|>")) {
+        return std.mem.indexOf(u8, template_source, "ipython") != null;
+    }
+    return false;
 }
 
 pub fn reservedOutputIds(
@@ -56,7 +70,7 @@ pub fn reservedOutputIds(
             if (sp.id == e) continue :outer;
         }
         if (std.mem.indexOf(u8, template_source, sp.content) != null) continue;
-        if (isOutputOnlySpecial(sp.content)) continue;
+        if (isOutputOnlySpecial(sp.content, template_source)) continue;
         try out.append(allocator, sp.id);
     }
     return out.toOwnedSlice(allocator);
@@ -3051,6 +3065,46 @@ test "reservedOutputIds: an OUTPUT-ONLY special is legit output the template can
     // Only the genuinely-reserved slot is suppressed.
     try testing.expectEqual(@as(usize, 1), ids.len);
     try testing.expectEqual(@as(u32, 200013), ids[0]);
+}
+
+test "reservedOutputIds: <|python_tag|> is exempt only under a Llama 3.1+ tool template" {
+    // eejd/zig-mlx-serve#5. Llama-3.2-Instruct opens every tool call with
+    // <|python_tag|> (id 128010) after `Environment: ipython`, but its template
+    // only ever renders replayed calls as bare JSON, so the template-presence
+    // derivation masked the one token the call starts with and greedy fell to
+    // the runner-up (a schema echo, or the empty <|eom_id|> reply).
+    const alloc = testing.allocator;
+    const flagged = [_]FlaggedSpecial{
+        .{ .id = 128006, .content = "<|start_header_id|>" },
+        .{ .id = 128008, .content = "<|eom_id|>" },
+        .{ .id = 128009, .content = "<|eot_id|>" },
+        .{ .id = 128010, .content = "<|python_tag|>" },
+        .{ .id = 128011, .content = "<|reserved_special_token_3|>" },
+        .{ .id = 128012, .content = "<|reserved_special_token_4|>" },
+    };
+    const eos = [_]u32{ 128008, 128009 };
+
+    // Llama 3.2 template: role markers + `Environment: ipython`, no python_tag.
+    const llama31 = "<|start_header_id|>system<|end_header_id|>\n\n" ++
+        "{% if tools is not none %}Environment: ipython\n{% endif %}<|eot_id|>";
+    const ids = try reservedOutputIds(alloc, &flagged, llama31, &eos);
+    defer alloc.free(ids);
+    // python_tag is reachable; every other reserved slot is still masked.
+    try testing.expectEqualSlices(u32, &[_]u32{ 128011, 128012 }, ids);
+
+    // Llama 3.0 / ChatML-on-Llama-vocab (Hermes-3): same vocab, no `ipython`
+    // in the template, so the token was never trained as output and stays masked.
+    const chatml = "<|start_header_id|>{{ role }}<|eot_id|>";
+    const masked = try reservedOutputIds(alloc, &flagged, chatml, &eos);
+    defer alloc.free(masked);
+    try testing.expectEqualSlices(u32, &[_]u32{ 128010, 128011, 128012 }, masked);
+
+    // A template that renders the tag itself (Llama 3.1 builtin_tools) was
+    // already exempt by presence, with or without `ipython`.
+    const renders = "{{ '<|python_tag|>' + tool_call.name }}";
+    const kept = try reservedOutputIds(alloc, &flagged, renders, &eos);
+    defer alloc.free(kept);
+    try testing.expectEqualSlices(u32, &[_]u32{ 128006, 128011, 128012 }, kept);
 }
 
 test "reservedOutputIds: specials minus template markers minus eos" {
