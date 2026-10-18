@@ -1752,7 +1752,7 @@
     <div class="section-header reveal">
       <div class="section-label">Speculative Decoding</div>
       <h2 class="section-title">Three ways to draft ahead</h2>
-      <p class="section-desc">Generate multiple tokens per forward pass, verified exactly — so output is identical, just faster. Works on every API surface, streaming or not, tools included: agent loops that echo file contents into edits decode at ~2×. Smart gates keep it on where it pays and step aside where it doesn't.</p>
+      <p class="section-desc">Generate multiple tokens per forward pass, every token verified against the target model — same model, faster (not guaranteed byte-identical to plain decoding at temperature 0). Works on every API surface, streaming or not, tools included: agent loops that echo file contents into edits decode at ~2×. Smart gates keep it on where it pays and step aside where it doesn't.</p>
     </div>
     <div class="spec-grid">
       <div class="spec-card reveal">
@@ -1777,7 +1777,7 @@
         <span class="spec-tag gate">ADAPTIVE</span>
         <h3>Gates that know when to quit</h3>
         <p>A prompt-time repetition score disables drafting on novel content; a runtime acceptance gate backs off mid-decode when drafts stop landing. You never pay for speculation that won't pay back.</p>
-        <div class="spec-win">exact output, <span>zero</span> quality cost</div>
+        <div class="spec-win">verified tokens, <span>zero</span> quality cost</div>
       </div>
     </div>
     <p class="spec-note reveal">

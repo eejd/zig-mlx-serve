@@ -10,7 +10,7 @@ Apple M4 Max, identical weights per engine. [benchmarks.md](../benchmarks.md) tr
 
 ## Speculative decoding
 
-Four flavors. At temp=0 each emits the same argmax as plain decoding **up to bf16 near-ties of the batched verify**; it is *not* byte-identical to plain decoding, not even within the first 30 tokens (see [Exactness versus plain decoding](#exactness-versus-plain-decoding)). At temp > 0 the Leviathan probability-ratio sampler makes the method exact in distribution (the sampled path has not been measured, so that is the algorithm's property, not a measured one):
+Four flavors. A speculative path verifies several tokens in one forward, so at temp=0 it is *not* guaranteed byte-identical to plain decoding, not even within the first 30 tokens: measured on Qwen3.5-4B-4bit, MTP+PLD and PLD-only differ from plain on some generations at bf16 near-ties of the verify (see [Exactness versus plain decoding](#exactness-versus-plain-decoding); the drafter companions and the Gemma 4 drafter were not measured). At temp > 0 the Leviathan probability-ratio sampler makes the method exact in distribution as an algorithm (the sampled path has not been measured):
 
 - **Native MTP** (Qwen 3.5/3.6/3.8) — checkpoints with a trained multi-token-prediction head (sidecar or baked in, like the Qwen 3.8 27B build) draft with the model's *own* head, with a controller that self-tunes depth per request. MoE sidecars supported. Auto-loads, zero setup.
 - **DFlash draft companions** — a model folder can ship its own `drafter/` block-draft companion (the Muse-Glimmer builds do); the server loads it with the model, switching models keeps the speedup, and the draft size adapts to the Mac. About 2x on Muse-Glimmer. `--no-drafter` turns it off.
