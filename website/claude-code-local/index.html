@@ -251,13 +251,13 @@
       <div class="split-copy reveal">
         <span class="split-kicker">Speculative decoding</span>
         <h3>~2× on the edits themselves</h3>
-        <p>File-edit tool calls echo existing code back with small changes — speculative decoding's best case. With tools active (every Claude Code request), <a class="prose-link" href="../speculative-decoding/">PLD and the Gemma 4 drafter</a> decode edit loops at roughly 2× (72 → 150 tok/s measured on Gemma 4 E4B), with the same argmax as plain decoding up to bf16 near-ties. Qwen 3.6 checkpoints with a native MTP sidecar hit up to 1.8× on agent turns automatically.</p>
+        <p>File-edit tool calls echo existing code back with small changes — speculative decoding's best case. With tools active (every Claude Code request), <a class="prose-link" href="../speculative-decoding/">PLD and the Gemma 4 drafter</a> decode edit loops at roughly 2× (72 → 150 tok/s measured on Gemma 4 E4B). Output can differ slightly from plain decoding at near-ties at temperature 0 (measured on Qwen3.5-4B-4bit, not on Gemma). Qwen 3.6 checkpoints with a native MTP sidecar hit up to 1.8× on agent turns automatically.</p>
       </div>
       <div class="split-visual reveal">
         <ul class="ticks">
           <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>72 → 150 tok/s</b> on file-edit tool loops (Gemma 4 E4B, 4-bit).</span></li>
           <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>Sane sampling defaults</b> — Claude Code omits sampling params, so mlx-serve applies each model's own <code>generation_config.json</code> instead of raw temp-1.0.</span></li>
-          <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>Verified output</b> — every drafted token is checked by the target model; it's speed, not approximation (greedy output can differ from plain decoding at bf16 near-ties).</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none"><polyline points="20 6 9 17 4 12"/></svg><span><b>Verified output</b> — every drafted token is checked by the target model; it's speed, not approximation (greedy output can differ from plain decoding at near-ties).</span></li>
         </ul>
       </div>
     </div>
