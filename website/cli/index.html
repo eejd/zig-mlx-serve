@@ -192,7 +192,7 @@ mlx-serve serve</pre></div>
     </table>
 
     <h3>Speed: speculative decoding</h3>
-    <p>All three paths produce output equivalent to plain decoding — see the <a href="../speculative-decoding/">deep dive</a>.</p>
+    <p>All three paths verify every drafted token against the target model; at temperature 0 the output can differ slightly from plain decoding at near-ties — see the <a href="../speculative-decoding/">deep dive</a>.</p>
     <table class="flag-table">
       <tr><th>Flag</th><th>Meaning</th></tr>
       <tr><td><code>--pld</code> / <code>--no-pld</code></td><td>Prompt Lookup Decoding — on by default, big wins on echo-heavy work (code edits, RAG, agents). <code>--pld-draft-len</code>, <code>--pld-key-len</code> tune it.</td></tr>

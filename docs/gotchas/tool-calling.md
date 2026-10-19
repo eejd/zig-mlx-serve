@@ -445,7 +445,7 @@ the two end sites provably untouched.
 Verification worth copying: stream vs non-stream reasoning compared
 BYTE-IDENTICAL at temperature 0 on LFM2.5 and Gemma, including the tool-call
 turn. That comparison is UNSOUND on Qwen3.6-27B-4bit — INT4 near-tie argmax
-plus MTP makes two temp-0 runs diverge past ~30-80 tokens (documented), and the
+plus MTP makes two temp-0 runs diverge (the observation on 27B; the only population measurement, Qwen3.5-4B-4bit with some runs diverging before token 30, see docs/performance.md "Exactness versus plain decoding", is a different model, so applying it here is an extrapolation `[INFERENCE]`), and the
 diff looks alarming until you notice the two runs generated different text. For
 that model the property to test is self-duplication within ONE stream (the
 reasoning must not contain its own head twice): 637 reasoning deltas, head

@@ -1645,8 +1645,8 @@
       </a>
       <a class="explore-card" href="speculative-decoding/" style="--ec:#d97706;">
         <span class="explore-kicker">Accelerate</span>
-        <h3>Same answers, 2× faster</h3>
-        <p>Speculative decoding, verified exact.</p>
+        <h3>Same model, 2× faster</h3>
+        <p>Speculative decoding: every token verified by the target model.</p>
         <span class="go">Deep dive →</span>
       </a>
       <a class="explore-card" href="tool-calling/" style="--ec:#0f9960;">
@@ -1752,7 +1752,7 @@
     <div class="section-header reveal">
       <div class="section-label">Speculative Decoding</div>
       <h2 class="section-title">Three ways to draft ahead</h2>
-      <p class="section-desc">Generate multiple tokens per forward pass, verified exactly — so output is identical, just faster. Works on every API surface, streaming or not, tools included: agent loops that echo file contents into edits decode at ~2×. Smart gates keep it on where it pays and step aside where it doesn't.</p>
+      <p class="section-desc">Generate multiple tokens per forward pass, every token verified against the target model — same model, faster (not guaranteed byte-identical to plain decoding at temperature 0). Works on every API surface, streaming or not, tools included: agent loops that echo file contents into edits decode at ~2×. Smart gates keep it on where it pays and step aside where it doesn't.</p>
     </div>
     <div class="spec-grid">
       <div class="spec-card reveal">
@@ -1777,7 +1777,7 @@
         <span class="spec-tag gate">ADAPTIVE</span>
         <h3>Gates that know when to quit</h3>
         <p>A prompt-time repetition score disables drafting on novel content; a runtime acceptance gate backs off mid-decode when drafts stop landing. You never pay for speculation that won't pay back.</p>
-        <div class="spec-win">exact output, <span>zero</span> quality cost</div>
+        <div class="spec-win">verified tokens, <span>zero</span> quality cost</div>
       </div>
     </div>
     <p class="spec-note reveal">
@@ -2234,7 +2234,7 @@
       </details>
       <details class="faq-item">
         <summary>Is the inference exact, or quantized output drift?</summary>
-        <p>For greedy decoding (temp=0), mlx-serve is byte-identical to the reference for the first ~30-80 generated tokens, with long-tail divergence inherent to INT4 float-reduction order. For temp &gt; 0, the Leviathan probability-ratio sampler keeps speculative decoding mathematically exact in distribution. Equivalence is pinned by automated tests on every release.</p>
+        <p>For greedy decoding (temp=0), plain decoding is bit-stable run to run. Speculative paths (MTP, PLD, drafters) verify several tokens per forward and are not guaranteed byte-identical to plain decoding: on Qwen3.5-4B-4bit with MTP+PLD, 34% of 200-token generations differed from plain (21% with PLD alone), each analysable flip a near-tie of at most 0.25 nats; drafters were not measured, and the cause is not yet established. For temp &gt; 0, the Leviathan probability-ratio sampler keeps speculative decoding exact in distribution as an algorithm; the sampled path is not yet measured.</p>
       </details>
       <details class="faq-item">
         <summary>Can mlx-serve generate images, video, and audio locally?</summary>

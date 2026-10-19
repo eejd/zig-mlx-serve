@@ -157,7 +157,7 @@ Apple M4 Max，各引擎权重完全相同，每个引擎都用出厂默认设�
 
 *代码补全解码 tok/s，v26.8.3，对比 LM Studio 0.4.19+2、oMLX 0.5.2 与 MTPLX 2.5.3，四个引擎加载的是完全相同的 MLX 权重文件。几何均值解码：**比 LM Studio 快 26%**、**比 oMLX 快 25%**，预填充则分别快 36% 与 10%。真正的两场对打发生在对手自己的检查点上：在它的 oQ4e 构建上（预填充档），**解码快 23%**；在它自己的 MTPLX-Optimized 构建上，**解码快 10% / 预填充快 17%**。*
 
-投机解码有四种形式（PLD、模型自带的配套草稿模型、Gemma 4 草稿模型、原生 Qwen MTP），全部与贪心解码等价，并带自适应门控，让新颖内容型负载保持同等水平。细节见 [docs/performance.md](docs/zh-CN/performance.md)。
+投机解码有四种形式（PLD、模型自带的配套草稿模型、Gemma 4 草稿模型、原生 Qwen MTP），设计上保持普通解码的贪心 argmax，但不保证与其逐字节相同（仅在一个模型上对 MTP+PLD 与仅 PLD 实测：部分生成在模型自身 logit 的近似平局处不同，见 [docs/performance.md](docs/zh-CN/performance.md#与普通解码的一致性)），并带自适应门控，让新颖内容型负载保持同等水平。细节见 [docs/performance.md](docs/zh-CN/performance.md)。
 
 ## 文档
 

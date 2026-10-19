@@ -166,7 +166,7 @@ Apple M4 Max, identical weights per engine, every engine on its shipping default
 
 *Code completion decode tok/s, v26.8.3, vs LM Studio 0.4.19+2, oMLX 0.5.2 and MTPLX 2.5.3, all four engines loading the identical MLX weight files. Geomean decode: **+26% over LM Studio** and **+25% over oMLX**, with prefill +36% and +10%. On the competitors' own checkpoints: **+23% decode over oMLX** on its oQ4e build, **+10% decode / +17% prefill over MTPLX** on its MTPLX-Optimized build.*
 
-Speculative decoding comes in four flavors (PLD, model-shipped draft companions, the Gemma 4 drafter, native Qwen MTP), all greedy-equivalent, with adaptive gates that keep novel-content workloads at parity. Details in [docs/performance.md](docs/performance.md).
+Speculative decoding comes in four flavors (PLD, model-shipped draft companions, the Gemma 4 drafter, native Qwen MTP), all designed to keep the greedy argmax of plain decoding but not guaranteed byte-identical to it (measured on one model, MTP+PLD and PLD only: some generations differ at near-ties of the model's own logits; see [docs/performance.md](docs/performance.md#exactness-versus-plain-decoding)), with adaptive gates that keep novel-content workloads at parity. Details in [docs/performance.md](docs/performance.md).
 
 ## Docs
 

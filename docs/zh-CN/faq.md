@@ -58,17 +58,17 @@
 
 ## 推理是精确的，还是有量化输出漂移？
 
-对贪心解码（temp=0），mlx-serve 在前约 30-80 个生成的 Token 上与参考实现逐字节相同，之后是 INT4 浮点归约顺序固有的长尾分歧（记录在 `CLAUDE.md` 中）。对 temp > 0，Leviathan 概率比采样器让投机解码在分布上数学精确。等价性由 `tests/test_pld_equivalence.sh`、`test_drafter_equivalence.sh` 与 `test_kv_quant_equivalence.sh` 钉住。
+对贪心解码（temp=0），普通解码（`--no-mtp --no-pld`）每次运行结果逐位稳定。投机路径（MTP、PLD、草稿模型）每次前向验证多个 Token，不保证与普通解码逐字节相同。在 Qwen3.5-4B-4bit 上对 MTP+PLD 与仅 PLD 实测（草稿模型未测）：默认 MTP+PLD 下 34 % 的 200 Token 生成与普通解码不同，269 个可分析分歧行中有 97 行在第 30 个 Token 之前分歧，且每个可分析的翻转都是普通解码自身 logit 的近似平局（差距 <= 0.25 nat；原因为 `[INFERENCE]`，见[与普通解码的一致性](performance.md#与普通解码的一致性)）。对 temp > 0，Leviathan 概率比采样器让投机解码在算法上分布精确；采样路径尚未实测。`tests/test_pld_equivalence.sh`、`test_drafter_equivalence.sh` 与 `test_kv_quant_equivalence.sh` 在各自的提示集上检查等价性，并不能证明一般意义上的逐字节相同。
 
 ## 我能在不同运行与设置之间得到逐字节相同的贪心输出吗？
 
-能，只要你关掉那些会合法地重排浮点数学的东西。投机解码在一次 forward 中校验多个 Token，而更宽的 forward 会挑到与单 Token forward 不同的 Metal kernel，所以接近平局的 argmax 可能翻转。这不是损坏，也不是种子问题（`seed` 在 temp 0 下不起作用）；这是每个推理服务引擎都具备的批宽特性。逐字节稳定的配方：
+能，只要你关掉那些会合法地重排浮点数学的东西。投机解码在一次 forward 中校验多个 Token，接近平局的 argmax 可能与普通解码相比翻转（已实测，见上）。推测的原因是更宽的 forward 会挑到与单 Token forward 不同的 Metal kernel（`[INFERENCE]`，尚未确定）。这不是损坏，也不是种子问题（`seed` 在 temp 0 下不起作用）。逐字节稳定的配方：
 
-- 关闭投机：请求里写 `enable_mtp: false`（或启动时加 `--no-mtp`），再加上 `--no-drafter`；若你开过 `--pld`，也要关掉
+- 关闭投机：请求里写 `enable_mtp: false` 与 `enable_pld: false`（或启动时加 `--no-mtp --no-pld`；PLD 默认开启，自身也会产生分歧），再加上 `--no-drafter`
 - `--kv-quant off` 或 `8`
 - 在混合架构上（Qwen 3.5/3.6/3.8、LFM2、Nemotron-H）：`--prefix-cache-entries 0`，因为缓存命中会用不同的块大小重跑递推
 
-如果你的测试门禁要求精确字符串匹配，就用这套配方跑。要让投机路径本身也逐字节相同，就意味着强制每个 kernel 的归约顺序与批宽无关，而这正是快速校验 kernel 换掉的东西。
+如果你的测试门禁要求精确字符串匹配，就用这套配方跑。目前没有让投机路径本身逐字节相同；若上述推测成立，那就意味着让每个 kernel 的归约顺序与批宽无关，而这正是快速校验 kernel 换掉的东西（eejd/zig-mlx-serve#4 的第二种解法，受阻于确定原因）。
 
 ## 我的数据去哪儿了？
 
