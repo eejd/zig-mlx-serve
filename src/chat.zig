@@ -1928,6 +1928,14 @@ fn endsWithThinkOpenTag(text: []const u8) ?usize {
 /// the model emitted inside its think block, which the parser deliberately
 /// skips). The whole tail is cut rather than excised: a wrapper we could not
 /// parse has no reliable end, and shipping half of it is the same leak.
+/// Llama 3.1+ (3.1 / 3.2 / 3.3) opens a tool call with this single special
+/// token, `<|python_tag|>{"name": …, "parameters": {…}}`, after the template's
+/// `Environment: ipython` (`tokenizer.isOutputOnlySpecial` keeps it unmasked).
+/// `parseToolCalls` reads the JSON behind it through the bare-JSON path, which
+/// ignores the text before the first `{`; this tag is the part of the call
+/// that would otherwise reach the client as content.
+const LLAMA_PYTHON_TAG = "<|python_tag|>";
+
 const tool_markup_openers = [_][]const u8{
     "<｜DSML｜", // DeepSeek-V4 native (covers tool_calls/invoke/parameter)
     "<|tool_call", // Gemma 4
@@ -1935,6 +1943,7 @@ const tool_markup_openers = [_][]const u8{
     "<tool_calls:", // Hy3 suffixed wrapper
     "<atem:", // Muse-Glimmer ATEM (covers function_calls/invoke/parameter)
     INKLING_INVOKE_TAG,
+    LLAMA_PYTHON_TAG, // Llama 3.1+ opens every tool call with it
 };
 
 /// Earliest index of MiniCPM5 attribute-form tool markup, or null.
@@ -3070,6 +3079,11 @@ pub fn streamShouldBufferForTools(buf: []const u8) bool {
     // first real pi session; the leak landed in pi's transcript and
     // contaminated every later turn's history).
     if (std.mem.indexOf(u8, buf, INKLING_INVOKE_TAG) != null) return true;
+
+    // Llama 3.1+: `<|python_tag|>` is one special token (arrives whole); the
+    // JSON behind it is call payload. Held from the tag on, so neither the tag
+    // nor `{"name": …` streams as visible content.
+    if (std.mem.indexOf(u8, buf, LLAMA_PYTHON_TAG) != null) return true;
 
     // DeepSeek-V4 DSML: everything from `<｜DSML｜` on is a tool-call block.
     if (std.mem.indexOf(u8, buf, "<｜DSML｜") != null) return true;
@@ -7692,6 +7706,39 @@ test "parseToolCalls: Inkling back-to-back invokes without <|end_message|>" {
     const p1 = try std.json.parseFromSlice(std.json.Value, allocator, calls[1].arguments, .{});
     defer p1.deinit();
     try testing.expectEqualStrings("b.js", p1.value.object.get("path").?.string);
+}
+
+test "Llama 3.1+ <|python_tag|>: no part of the call reaches content, streamed or not" {
+    // eejd/zig-mlx-serve#5, second defect. With the reserved-token mask no
+    // longer removing <|python_tag|>, the model's whole tool call is
+    // `<|python_tag|>{"name": …, "parameters": {…}}`; the tag used to reach the
+    // client as `content` next to a populated `tool_calls`.
+    const alloc = testing.allocator;
+    const call = "<|python_tag|>{\"name\": \"get_weather\", \"parameters\": {\"city\": \"Paris\"}}";
+
+    // The parser still reads the call behind the tag.
+    const calls = (try parseToolCalls(alloc, call)).?;
+    defer {
+        for (calls) |tc| {
+            alloc.free(tc.name);
+            alloc.free(tc.arguments);
+        }
+        alloc.free(calls);
+    }
+    try testing.expectEqual(@as(usize, 1), calls.len);
+    try testing.expectEqualStrings("get_weather", calls[0].name);
+
+    // Non-streaming: the content split cuts at the tag, whether the call is the
+    // whole reply or follows prose.
+    try testing.expectEqualStrings("", splitThinkBlock(call, true, false).content);
+    try testing.expectEqualStrings("Checking.", splitThinkBlock("Checking.\n" ++ call, true, false).content);
+
+    // Streaming: the tag alone holds the buffer (it is one token), and so does
+    // everything after it; prose that merely mentions python does not.
+    try testing.expect(streamShouldBufferForTools("<|python_tag|>"));
+    try testing.expect(streamShouldBufferForTools("<|python_tag|>{\""));
+    try testing.expect(streamShouldBufferForTools("Checking.\n<|python_tag|>"));
+    try testing.expect(!streamShouldBufferForTools("Use the python tag to open a code cell."));
 }
 
 test "streamShouldBufferForTools: Inkling invoke marker and NAME hold" {

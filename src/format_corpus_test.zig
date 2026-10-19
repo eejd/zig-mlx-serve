@@ -1873,6 +1873,7 @@ const reasoning_leak_tags = [_][]const u8{
     "<tool_calls:",
     "<|content_invoke_tool_json|>",
     "<atem:",
+    "<|python_tag|>",
 };
 
 fn fail(entry: Expect, comptime what: []const u8, got: []const u8) !void {
@@ -2563,6 +2564,14 @@ const dialects = [_]Dialect{
         .family = "llama3",
         .dialect = "raw JSON, name+parameters",
         .raw = "{\"name\": \"write_file\", \"parameters\": {\"path\": \"a.txt\", \"content\": \"hi\"}}",
+        .name = "write_file",
+        .key = "path",
+        .value = "a.txt",
+    },
+    .{
+        .family = "llama3",
+        .dialect = "<|python_tag|> + JSON, name+parameters",
+        .raw = "<|python_tag|>{\"name\": \"write_file\", \"parameters\": {\"path\": \"a.txt\", \"content\": \"hi\"}}",
         .name = "write_file",
         .key = "path",
         .value = "a.txt",
