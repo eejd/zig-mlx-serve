@@ -19,6 +19,7 @@ MLX's quantized kernels.
 | Topic | Upstream PR | Status |
 |---|---|---|
 | `topic/f32-xsum-qmv` | none yet | not-submitted; tracked in eejd/zig-mlx-serve#3. Applies unchanged to upstream `main` (`ba0088f7`) and to `v26.10.2`. Blocked for upstream on its MLX pin: `lib/mlx-src` is v0.32.3 (`64ea011c`) on `main` and at `v26.10.2`, whose qmv still sums in bf16, so upstream's own bit-equality tests would fail there until the pin moves to >= 0.32.4 (or the sum is selected by MLX version) |
+| `topic/minicpm5-typed-arguments` | none yet | not-submitted; tracked in eejd/zig-mlx-serve#14. Array/object tool arguments written as Python `repr` (MiniCPM5: `['a', 'b']`, `{'k': 1}`) were shipped as strings; the schema coercion now reads a strict Python literal of the declared container kind. Touches `src/chat.zig` (+ tests in `src/server.zig`, a note in `docs/gotchas/tool-calling.md`); no file in common with `topic/f32-xsum-qmv` |
 
 `topic/f32-xsum-qmv`: mlx-serve's own copies of MLX's qmv `load_vector` (rowqmv.zig, the
 `msv_qmv_rows`, verify paired gate-up, verify expert reuse, MTP coarse-pairs and Gemma gelu-ple
