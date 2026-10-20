@@ -22431,6 +22431,109 @@ test "parseToolCallsForRequest coerces args to the schema (server-side chokepoin
     try std.testing.expect(calls2 != null);
 }
 
+test "parseToolCallsForRequest: MiniCPM5-2B-4bit tool_arg outputs, verbatim, come out typed (eejd/zig-mlx-serve#14)" {
+    // The 20 distinct greedy generations (the 20 sampled ones are the same text)
+    // of the quantbench `tool_arg` ability, copied byte for byte from
+    // py-quantbench docs/evidence/model-qualification-2026-10-19/minicpm5-2b-4bit/
+    // result.json (openbmb/MiniCPM5-2B-MLX@8a9ad753), with the arguments the
+    // reference extractor `minicpm5` (src/quantbench/qualify/formats.py) reads
+    // from each against the same tool schema. Before the fix the 8 list/object
+    // rows shipped the container as a STRING (`"['age', 'computer', 'issue']"`);
+    // the scalar, markup (`<`/`&` without CDATA) and CDATA rows already passed and
+    // are pinned here so the fix cannot trade one for the other.
+    const allocator = std.testing.allocator;
+    const tools =
+        \\[{"type":"function","function":{"name":"echo_args","description":"Record the given values. Call this tool, passing the values exactly.","parameters":{"type":"object","properties":{"text":{"type":"string"},"count":{"type":"integer"},"flag":{"type":"boolean"},"items":{"type":"array","items":{"type":"string"}},"nested":{"type":"object"}},"required":["text"]}}}]
+    ;
+    const Row = struct { id: []const u8, raw: []const u8, args: []const u8 };
+    const rows = [_]Row{
+        .{ .id = "scalars-00", .raw = "<function name=\"echo_args\"><param name=\"text\">hand summer</param><param name=\"count\">17</param><param name=\"flag\">True</param></function>", .args = "{\"text\":\"hand summer\",\"count\":17,\"flag\":true}" },
+        .{ .id = "list-01", .raw = "<function name=\"echo_args\"><param name=\"text\">list</param><param name=\"items\">['age', 'computer', 'issue']</param></function>", .args = "{\"text\":\"list\",\"items\":[\"age\",\"computer\",\"issue\"]}" },
+        .{ .id = "object-02", .raw = "<function name=\"echo_args\"><param name=\"text\">obj</param><param name=\"nested\">{'unit': 'a', 'depth': 2}</param></function>", .args = "{\"text\":\"obj\",\"nested\":{\"unit\":\"a\",\"depth\":2}}" },
+        .{ .id = "markup-03", .raw = "<function name=\"echo_args\"><param name=\"text\">if student < way and official > organization then <ok> & done</param></function>", .args = "{\"text\":\"if student < way and official > organization then <ok> & done\"}" },
+        .{ .id = "code-04", .raw = "<function name=\"echo_args\"><param name=\"text\"><![CDATA[def canyon(x):\n    return x + 1]]></param></function>", .args = "{\"text\":\"def canyon(x):\\n    return x + 1\"}" },
+        .{ .id = "scalars-05", .raw = "<function name=\"echo_args\"><param name=\"text\">winter foot</param><param name=\"count\">26</param><param name=\"flag\">True</param></function>", .args = "{\"text\":\"winter foot\",\"count\":26,\"flag\":true}" },
+        .{ .id = "list-06", .raw = "<function name=\"echo_args\"><param name=\"text\">list</param><param name=\"items\">['period', 'space', 'world']</param></function>", .args = "{\"text\":\"list\",\"items\":[\"period\",\"space\",\"world\"]}" },
+        .{ .id = "object-07", .raw = "<function name=\"echo_args\"><param name=\"text\">obj</param><param name=\"nested\">{'unit': 'm', 'depth': 5}</param></function>", .args = "{\"text\":\"obj\",\"nested\":{\"unit\":\"m\",\"depth\":5}}" },
+        .{ .id = "markup-08", .raw = "<function name=\"echo_args\"><param name=\"text\">if interest < couple and summer > way then <ok> & done</param></function>", .args = "{\"text\":\"if interest < couple and summer > way then <ok> & done\"}" },
+        .{ .id = "code-09", .raw = "<function name=\"echo_args\"><param name=\"text\"><![CDATA[def rate(x):\n    return x + 1]]></param></function>", .args = "{\"text\":\"def rate(x):\\n    return x + 1\"}" },
+        .{ .id = "scalars-10", .raw = "<function name=\"echo_args\"><param name=\"text\">technology issue</param><param name=\"count\">34</param><param name=\"flag\">True</param></function>", .args = "{\"text\":\"technology issue\",\"count\":34,\"flag\":true}" },
+        .{ .id = "list-11", .raw = "<function name=\"echo_args\"><param name=\"text\">list</param><param name=\"items\">['wife', 'form', 'garden']</param></function>", .args = "{\"text\":\"list\",\"items\":[\"wife\",\"form\",\"garden\"]}" },
+        .{ .id = "object-12", .raw = "<function name=\"echo_args\"><param name=\"text\">obj</param><param name=\"nested\">{'unit': 's', 'depth': 3}</param></function>", .args = "{\"text\":\"obj\",\"nested\":{\"unit\":\"s\",\"depth\":3}}" },
+        .{ .id = "markup-13", .raw = "<function name=\"echo_args\"><param name=\"text\">if night < research and state > moment then <ok> & done</param></function>", .args = "{\"text\":\"if night < research and state > moment then <ok> & done\"}" },
+        .{ .id = "code-14", .raw = "<function name=\"echo_args\"><param name=\"text\"><![CDATA[def doctor(x):\n    return x + 1]]></param></function>", .args = "{\"text\":\"def doctor(x):\\n    return x + 1\"}" },
+        .{ .id = "scalars-15", .raw = "<function name=\"echo_args\"><param name=\"text\">foot control</param><param name=\"count\">29</param><param name=\"flag\">True</param></function>", .args = "{\"text\":\"foot control\",\"count\":29,\"flag\":true}" },
+        .{ .id = "list-16", .raw = "<function name=\"echo_args\"><param name=\"text\">list</param><param name=\"items\">['effort', 'care', 'party']</param></function>", .args = "{\"text\":\"list\",\"items\":[\"effort\",\"care\",\"party\"]}" },
+        .{ .id = "object-17", .raw = "<function name=\"echo_args\"><param name=\"text\">obj</param><param name=\"nested\">{'unit': 'p', 'depth': 4}</param></function>", .args = "{\"text\":\"obj\",\"nested\":{\"unit\":\"p\",\"depth\":4}}" },
+        .{ .id = "markup-18", .raw = "<function name=\"echo_args\"><param name=\"text\">if organization < state and control > table then <ok> & done</param></function>", .args = "{\"text\":\"if organization < state and control > table then <ok> & done\"}" },
+        .{ .id = "code-19", .raw = "<function name=\"echo_args\"><param name=\"text\"><![CDATA[def kid(x):\n    return x + 1]]></param></function>", .args = "{\"text\":\"def kid(x):\\n    return x + 1\"}" },
+    };
+    for (rows) |row| {
+        const calls = (try parseToolCallsForRequest(allocator, row.raw, tools, true)) orelse {
+            std.debug.print("{s}: no call parsed\n", .{row.id});
+            return error.TestUnexpectedResult;
+        };
+        defer {
+            for (calls) |tc| {
+                allocator.free(tc.name);
+                allocator.free(tc.arguments);
+            }
+            allocator.free(calls);
+        }
+        try std.testing.expectEqual(@as(usize, 1), calls.len);
+        try std.testing.expectEqualStrings("echo_args", calls[0].name);
+        std.testing.expectEqualStrings(row.args, calls[0].arguments) catch |e| {
+            std.debug.print("case {s}\n", .{row.id});
+            return e;
+        };
+    }
+}
+
+test "parseToolCallsForRequest: MiniCPM5 tool_parallel-00, verbatim (guard for eejd/zig-mlx-serve#14; passes before and after)" {
+    // The reference run's tool_parallel-00 generation, byte for byte: two
+    // consecutive <function> blocks, no wrapper, a newline between them.
+    const allocator = std.testing.allocator;
+    const tools =
+        \\[{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string","description":"City name"},"unit":{"type":"string","enum":["celsius","fahrenheit"]}},"required":["city"]}}}]
+    ;
+    const text = "<function name=\"get_weather\"><param name=\"city\">Havana</param></function>\n" ++
+        "<function name=\"get_weather\"><param name=\"city\">Dublin</param></function>";
+    const calls = (try parseToolCallsForRequest(allocator, text, tools, true)).?;
+    defer {
+        for (calls) |tc| {
+            allocator.free(tc.name);
+            allocator.free(tc.arguments);
+        }
+        allocator.free(calls);
+    }
+    try std.testing.expectEqual(@as(usize, 2), calls.len);
+    try std.testing.expectEqualStrings("{\"city\":\"Havana\"}", calls[0].arguments);
+    try std.testing.expectEqualStrings("{\"city\":\"Dublin\"}", calls[1].arguments);
+}
+
+test "parseToolCallsForRequest: consecutive MiniCPM5 calls are each typed on their own (eejd/zig-mlx-serve#14)" {
+    // COMPOSED, not a recorded generation: the reference run's list-01 and
+    // object-02 outputs, both verbatim, as two consecutive calls the way the model
+    // writes parallel calls. Fails before the fix (both containers stay strings).
+    const allocator = std.testing.allocator;
+    const tools =
+        \\[{"type":"function","function":{"name":"echo_args","parameters":{"type":"object","properties":{"text":{"type":"string"},"count":{"type":"integer"},"flag":{"type":"boolean"},"items":{"type":"array","items":{"type":"string"}},"nested":{"type":"object"}},"required":["text"]}}}]
+    ;
+    const text = "<function name=\"echo_args\"><param name=\"text\">list</param><param name=\"items\">['age', 'computer', 'issue']</param></function>\n" ++
+        "<function name=\"echo_args\"><param name=\"text\">obj</param><param name=\"nested\">{'unit': 'a', 'depth': 2}</param></function>";
+    const calls = (try parseToolCallsForRequest(allocator, text, tools, true)).?;
+    defer {
+        for (calls) |tc| {
+            allocator.free(tc.name);
+            allocator.free(tc.arguments);
+        }
+        allocator.free(calls);
+    }
+    try std.testing.expectEqual(@as(usize, 2), calls.len);
+    try std.testing.expectEqualStrings("{\"text\":\"list\",\"items\":[\"age\",\"computer\",\"issue\"]}", calls[0].arguments);
+    try std.testing.expectEqualStrings("{\"text\":\"obj\",\"nested\":{\"unit\":\"a\",\"depth\":2}}", calls[1].arguments);
+}
+
 test "parseToolCallsForRequest hoists a misplaced required param (server-side chokepoint wiring)" {
     // Live 2026-07-13 pi session, gemma-4-26B-A4B: the model buried `path` inside
     // each edits[] item and emitted none at the top level, so pi rejected three

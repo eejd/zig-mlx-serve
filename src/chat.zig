@@ -4152,6 +4152,282 @@ fn parseContainerAllowingRepeats(allocator: std.mem.Allocator, text: []const u8)
     return first;
 }
 
+/// A Python literal of container kind → JSON text, or null when `text` is not
+/// EXACTLY one such literal. The reader is STRICT on purpose: it is the
+/// container arm's LAST reading (after strict JSON and the tolerant JSON
+/// repair), and a value it cannot read in full stays the string the model wrote
+/// — never a partial or guessed structure.
+///
+/// Why this exists: MiniCPM5's chat template renders a non-string tool value
+/// with Python's `str` (`['a', 'b']`, `{'unit': 'a', 'depth': 2}`, `True`) and
+/// the model writes its own calls the same way (eejd/zig-mlx-serve#14,
+/// MiniCPM5-2B-4bit: all 8 list/object `tool_arg` cases came back as the STRING
+/// `"['age', 'computer', 'issue']"`). Single-quoted strings make that neither
+/// JSON nor repairable JSON. The tag grammar types nothing, so — like every
+/// other family's containers — the DECLARED `array`/`object` is what asks for
+/// this reading; a `string` parameter holding the same bytes is never touched.
+///
+/// Accepted: list, dict with string keys, nested to depth 32, str ('…' or
+/// "…", Python escapes incl. \xNN \uNNNN \UNNNNNNNN and octal), decimal int and
+/// float, True/False/None, trailing commas. Everything else is declined, so the
+/// original string survives: tuples, sets, non-string dict keys, string
+/// prefixes (r/b/u/f), triple-quoted and implicitly concatenated strings,
+/// hex/underscore/complex numbers, bare names, comments.
+fn pythonLiteralToJson(allocator: std.mem.Allocator, text: []const u8) error{OutOfMemory}!?[]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var r = PyLiteralReader{ .s = text, .out = &out, .allocator = allocator };
+    r.skipWs();
+    r.value(0) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.NotLiteral => {
+            out.deinit(allocator);
+            return null;
+        },
+    };
+    r.skipWs();
+    if (r.i != text.len) {
+        out.deinit(allocator);
+        return null;
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+const PyLiteralReader = struct {
+    s: []const u8,
+    i: usize = 0,
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+
+    const Error = error{ NotLiteral, OutOfMemory };
+    const max_depth = 32;
+
+    fn skipWs(self: *PyLiteralReader) void {
+        while (self.i < self.s.len) : (self.i += 1) {
+            switch (self.s[self.i]) {
+                ' ', '\t', '\n', '\r', 0x0c => {},
+                else => return,
+            }
+        }
+    }
+
+    fn peek(self: *const PyLiteralReader) ?u8 {
+        return if (self.i < self.s.len) self.s[self.i] else null;
+    }
+
+    fn isWordChar(c: u8) bool {
+        return std.ascii.isAlphanumeric(c) or c == '_';
+    }
+
+    fn value(self: *PyLiteralReader, depth: usize) Error!void {
+        if (depth > max_depth) return error.NotLiteral;
+        const c = self.peek() orelse return error.NotLiteral;
+        switch (c) {
+            '[' => return self.list(depth),
+            '{' => return self.dict(depth),
+            '\'', '"' => return self.string(),
+            '-', '+', '0'...'9' => return self.number(),
+            else => return self.word(),
+        }
+    }
+
+    fn word(self: *PyLiteralReader) Error!void {
+        const rest = self.s[self.i..];
+        const words = [_]struct { py: []const u8, json: []const u8 }{
+            .{ .py = "True", .json = "true" },
+            .{ .py = "False", .json = "false" },
+            .{ .py = "None", .json = "null" },
+        };
+        for (words) |w| {
+            if (!std.mem.startsWith(u8, rest, w.py)) continue;
+            if (rest.len > w.py.len and isWordChar(rest[w.py.len])) return error.NotLiteral;
+            self.i += w.py.len;
+            try self.out.appendSlice(self.allocator, w.json);
+            return;
+        }
+        return error.NotLiteral;
+    }
+
+    fn number(self: *PyLiteralReader) Error!void {
+        var negative = false;
+        if (self.s[self.i] == '-' or self.s[self.i] == '+') {
+            negative = self.s[self.i] == '-';
+            self.i += 1;
+        }
+        const digits_start = self.i;
+        while (self.i < self.s.len and std.ascii.isDigit(self.s[self.i])) self.i += 1;
+        const int_len = self.i - digits_start;
+        if (int_len == 0) return error.NotLiteral;
+        // `007` is not a Python 3 int and not a JSON number.
+        if (int_len > 1 and self.s[digits_start] == '0') return error.NotLiteral;
+        if (self.peek() == @as(u8, '.')) {
+            self.i += 1;
+            const frac_start = self.i;
+            while (self.i < self.s.len and std.ascii.isDigit(self.s[self.i])) self.i += 1;
+            if (self.i == frac_start) return error.NotLiteral; // `5.` is Python, not JSON
+        }
+        if (self.peek()) |e| if (e == 'e' or e == 'E') {
+            self.i += 1;
+            if (self.peek()) |sg| if (sg == '+' or sg == '-') {
+                self.i += 1;
+            };
+            const exp_start = self.i;
+            while (self.i < self.s.len and std.ascii.isDigit(self.s[self.i])) self.i += 1;
+            if (self.i == exp_start) return error.NotLiteral;
+        };
+        // `1_000`, `0x10`, `1j`, `1.5.2`: a number must end at a delimiter.
+        if (self.peek()) |t| if (isWordChar(t) or t == '.') return error.NotLiteral;
+        if (negative) try self.out.append(self.allocator, '-');
+        try self.out.appendSlice(self.allocator, self.s[digits_start..self.i]);
+    }
+
+    fn appendJsonBytes(self: *PyLiteralReader, bytes: []const u8) Error!void {
+        for (bytes) |b| switch (b) {
+            '"' => try self.out.appendSlice(self.allocator, "\\\""),
+            '\\' => try self.out.appendSlice(self.allocator, "\\\\"),
+            '\n' => try self.out.appendSlice(self.allocator, "\\n"),
+            '\r' => try self.out.appendSlice(self.allocator, "\\r"),
+            '\t' => try self.out.appendSlice(self.allocator, "\\t"),
+            0...8, 11, 12, 14...31 => {
+                var esc: [6]u8 = undefined;
+                const e = std.fmt.bufPrint(&esc, "\\u{x:0>4}", .{b}) catch unreachable;
+                try self.out.appendSlice(self.allocator, e);
+            },
+            else => try self.out.append(self.allocator, b),
+        };
+    }
+
+    fn appendCodepoint(self: *PyLiteralReader, cp: u32) Error!void {
+        if (cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF)) return error.NotLiteral;
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(@intCast(cp), &buf) catch return error.NotLiteral;
+        try self.appendJsonBytes(buf[0..n]);
+    }
+
+    fn hexRun(self: *PyLiteralReader, n: usize) Error!u32 {
+        if (self.i + n > self.s.len) return error.NotLiteral;
+        var cp: u32 = 0;
+        for (self.s[self.i .. self.i + n]) |h| {
+            const d = std.fmt.charToDigit(h, 16) catch return error.NotLiteral;
+            cp = (cp << 4) | d;
+        }
+        self.i += n;
+        return cp;
+    }
+
+    fn string(self: *PyLiteralReader) Error!void {
+        const q = self.s[self.i];
+        // A triple-quoted string (three quotes in a row) is declined.
+        if (self.i + 2 < self.s.len and self.s[self.i + 1] == q and self.s[self.i + 2] == q) return error.NotLiteral;
+        self.i += 1;
+        try self.out.append(self.allocator, '"');
+        while (true) {
+            const c = self.peek() orelse return error.NotLiteral; // unterminated
+            self.i += 1;
+            if (c == q) break;
+            if (c == '\n' or c == '\r') return error.NotLiteral; // a bare newline ends no Python string
+            if (c != '\\') {
+                try self.appendJsonBytes(&[_]u8{c});
+                continue;
+            }
+            const e = self.peek() orelse return error.NotLiteral;
+            self.i += 1;
+            switch (e) {
+                '\n' => {}, // backslash-newline: line continuation, no character
+                '\\', '\'', '"' => try self.appendJsonBytes(&[_]u8{e}),
+                'n' => try self.appendCodepoint('\n'),
+                'r' => try self.appendCodepoint('\r'),
+                't' => try self.appendCodepoint('\t'),
+                'a' => try self.appendCodepoint(7),
+                'b' => try self.appendCodepoint(8),
+                'f' => try self.appendCodepoint(12),
+                'v' => try self.appendCodepoint(11),
+                '0'...'7' => {
+                    var cp: u32 = e - '0';
+                    var n: usize = 1;
+                    while (n < 3) : (n += 1) {
+                        const o = self.peek() orelse break;
+                        if (o < '0' or o > '7') break;
+                        cp = cp * 8 + (o - '0');
+                        self.i += 1;
+                    }
+                    try self.appendCodepoint(cp);
+                },
+                'x' => try self.appendCodepoint(try self.hexRun(2)),
+                'u' => try self.appendCodepoint(try self.hexRun(4)),
+                'U' => try self.appendCodepoint(try self.hexRun(8)),
+                'N' => return error.NotLiteral, // \N{name}: needs the Unicode name table
+                // Python keeps the backslash of an unknown escape (`'\d' == '\\d'`).
+                else => {
+                    try self.appendJsonBytes("\\");
+                    try self.appendJsonBytes(&[_]u8{e});
+                },
+            }
+        }
+        try self.out.append(self.allocator, '"');
+    }
+
+    fn list(self: *PyLiteralReader, depth: usize) Error!void {
+        self.i += 1; // [
+        try self.out.append(self.allocator, '[');
+        var first = true;
+        while (true) {
+            self.skipWs();
+            if (self.peek() == @as(u8, ']')) {
+                self.i += 1;
+                break;
+            }
+            if (!first) {
+                if (self.peek() != @as(u8, ',')) return error.NotLiteral;
+                self.i += 1;
+                self.skipWs();
+                if (self.peek() == @as(u8, ']')) { // trailing comma
+                    self.i += 1;
+                    break;
+                }
+                try self.out.append(self.allocator, ',');
+            }
+            try self.value(depth + 1);
+            first = false;
+        }
+        try self.out.append(self.allocator, ']');
+    }
+
+    fn dict(self: *PyLiteralReader, depth: usize) Error!void {
+        self.i += 1; // {
+        try self.out.append(self.allocator, '{');
+        var first = true;
+        while (true) {
+            self.skipWs();
+            if (self.peek() == @as(u8, '}')) {
+                self.i += 1;
+                break;
+            }
+            if (!first) {
+                if (self.peek() != @as(u8, ',')) return error.NotLiteral;
+                self.i += 1;
+                self.skipWs();
+                if (self.peek() == @as(u8, '}')) { // trailing comma
+                    self.i += 1;
+                    break;
+                }
+                try self.out.append(self.allocator, ',');
+            }
+            const k = self.peek() orelse return error.NotLiteral;
+            if (k != '\'' and k != '"') return error.NotLiteral; // JSON keys are strings
+            try self.string();
+            self.skipWs();
+            if (self.peek() != @as(u8, ':')) return error.NotLiteral;
+            self.i += 1;
+            try self.out.append(self.allocator, ':');
+            self.skipWs();
+            try self.value(depth + 1);
+            first = false;
+        }
+        try self.out.append(self.allocator, '}');
+    }
+};
+
 /// Coerce ONE value to the declared type. Returns null when the value already
 /// matches or the spelling is undecidable. Allocated replacements are appended
 /// to `owned`; parsed sub-documents to `docs` — both are freed by the caller
@@ -4190,19 +4466,42 @@ fn coerceValueToType(
         // missing comma between two object values). Same big-file escaping class
         // as looseRepairToolCallJson — re-serialize tolerantly, then STRICT-parse
         // the result so a mis-repair that yields invalid JSON is discarded.
-        const repaired = looseRepairContainer(allocator, t) orelse return null;
-        defer allocator.free(repaired);
-        var rdoc = parseContainerAllowingRepeats(allocator, repaired) orelse {
-            log.debug("[tool-autocorrect] {s} param left as a string: not well-formed JSON of that kind\n", .{want});
-            return null;
-        };
-        const rkind_ok = if (want_array) rdoc.value == .array else rdoc.value == .object;
-        if (!rkind_ok) {
-            rdoc.deinit();
-            return null;
+        if (looseRepairContainer(allocator, t)) |repaired| {
+            defer allocator.free(repaired);
+            if (parseContainerAllowingRepeats(allocator, repaired)) |rdoc| {
+                const rkind_ok = if (want_array) rdoc.value == .array else rdoc.value == .object;
+                if (!rkind_ok) {
+                    var d = rdoc;
+                    d.deinit();
+                    return null;
+                }
+                try docs.append(allocator, rdoc); // ownership transfers; never deinit here
+                return rdoc.value;
+            }
         }
-        try docs.append(allocator, rdoc); // ownership transfers; never deinit here
-        return rdoc.value;
+
+        // Neither JSON nor repairable JSON: a Python literal (`['a', 'b']`,
+        // `{'k': 1}`, `True`), which is how MiniCPM5's template renders non-string
+        // values and how the model writes them back. LAST on purpose: the repair
+        // already turns some inputs into values (`["a\/b",]` -> `a/b`, JSON's
+        // `\/`; `["\x41"]` -> the four characters `\x41`) that a Python reading
+        // would change, and this arm must only ever act on values that used to
+        // stay strings.
+        if (try pythonLiteralToJson(allocator, t)) |json_text| {
+            defer allocator.free(json_text);
+            if (parseContainerAllowingRepeats(allocator, json_text)) |pdoc| {
+                const pkind_ok = if (want_array) pdoc.value == .array else pdoc.value == .object;
+                if (pkind_ok) {
+                    try docs.append(allocator, pdoc);
+                    return pdoc.value;
+                }
+                var d = pdoc;
+                d.deinit();
+                return null;
+            }
+        }
+        log.debug("[tool-autocorrect] {s} param left as a string: not well-formed JSON of that kind\n", .{want});
+        return null;
     }
     if (std.mem.eql(u8, want, "boolean")) {
         return switch (v) {
@@ -4355,7 +4654,8 @@ pub fn requiredParamIsBuried(
 ///
 /// Scalars AND containers: a tag format types nothing, so a declared
 /// `array`/`object` arrives as a string of JSON and `coerceValueToType` parses
-/// it back (strict, then one tolerant repair re-validated strictly). This
+/// it back (strict JSON, then one tolerant repair re-validated strictly, then a
+/// strict Python literal for `['a']` / `{'k': 1}` (`pythonLiteralToJson`)). This
 /// comment used to say "only SCALARS are touched" — it was two weeks stale by
 /// the time it was read as a spec and filed as issue #94. A contract comment is
 /// load-bearing documentation: pin it with a test (`issue #94: a container
@@ -7058,6 +7358,12 @@ fn stripHermesValueFraming(raw: []const u8) []const u8 {
 /// COMPLETE `<param>…</param>` pairs before the cut still recover (mirrors
 /// `parseHy3ToolCalls`'s `call_end` fallback); a partial trailing value is
 /// never salvaged.
+///
+/// Every value leaves here as a STRING. The template renders non-string values
+/// with Python's `str` (`True`, `['a', 'b']`, `{'k': 1}`) and the model writes
+/// them back the same way, so the declared type is applied downstream by
+/// `coerceToolArgsToSchema`, which reads a Python-repr container through
+/// `pythonLiteralToJson` (eejd/zig-mlx-serve#14).
 fn parseMiniCpm5ToolCalls(allocator: std.mem.Allocator, text: []const u8, calls: *std.ArrayList(ParsedToolCall)) !void {
     var pos: usize = 0;
     while (std.mem.indexOfPos(u8, text, pos, "<function")) |p| {
@@ -8928,6 +9234,213 @@ test "issue #94: a container param carried as literal TEXT coerces to a real arr
     // A STRING param whose content merely looks bracket-y is untouched — the
     // schema decides, never the spelling.
     try testing.expectEqualStrings("[not an array]", o.get("label").?.string);
+}
+
+test "pythonLiteralToJson: Python repr of lists and dicts reads as JSON" {
+    // eejd/zig-mlx-serve#14. MiniCPM5 renders and writes non-string tool values
+    // with Python's `str`; these are the spellings it uses, plus the escapes,
+    // numbers and nesting a longer value brings.
+    const a = testing.allocator;
+    const Case = struct { py: []const u8, json: []const u8 };
+    const cases = [_]Case{
+        .{ .py = "['age', 'computer', 'issue']", .json = "[\"age\",\"computer\",\"issue\"]" },
+        .{ .py = "{'unit': 'a', 'depth': 2}", .json = "{\"unit\":\"a\",\"depth\":2}" },
+        .{ .py = "[1, -2, 3.5, 1e3, -0.25E-2, True, False, None]", .json = "[1,-2,3.5,1e3,-0.25E-2,true,false,null]" },
+        .{ .py = "{'a': [1, {'b': None}], \"c\": \"it's\"}", .json = "{\"a\":[1,{\"b\":null}],\"c\":\"it's\"}" },
+        .{ .py = "[]", .json = "[]" },
+        .{ .py = "{}", .json = "{}" },
+        .{ .py = "[1, 2,]", .json = "[1,2]" },
+        .{ .py = "{'a': 1,}", .json = "{\"a\":1}" },
+        .{ .py = "[ 'a' ,\n  'b' ]", .json = "[\"a\",\"b\"]" },
+        // Escapes: JSON-significant bytes come out re-escaped, \x / \u become UTF-8,
+        // an unknown escape keeps its backslash (Python's own rule).
+        .{ .py = "['a\\nb', 'tab\\there', 'q\\'uote', \"dq\\\"\", '\\x41\\u00e9', 'back\\\\slash', 'unknown\\d']", .json = "[\"a\\nb\",\"tab\\there\",\"q'uote\",\"dq\\\"\",\"A\xc3\xa9\",\"back\\\\slash\",\"unknown\\\\d\"]" },
+        .{ .py = "['\\101\\0', '\\x01']", .json = "[\"A\\u0000\",\"\\u0001\"]" },
+        .{ .py = "['multi\\\nline']", .json = "[\"multiline\"]" }, // backslash-newline continues the string
+        .{ .py = "['\xc3\xa9\xe2\x82\xac']", .json = "[\"\xc3\xa9\xe2\x82\xac\"]" },
+    };
+    for (cases) |c| {
+        const got = (try pythonLiteralToJson(a, c.py)) orelse {
+            std.debug.print("declined: {s}\n", .{c.py});
+            return error.TestUnexpectedResult;
+        };
+        defer a.free(got);
+        try testing.expectEqualStrings(c.json, got);
+    }
+}
+
+test "pythonLiteralToJson: anything that is not exactly one literal is declined" {
+    const a = testing.allocator;
+    const declined = [_][]const u8{
+        "(1, 2)", // tuple
+        "{1, 2}", // set
+        "{1: 'a'}", // non-string key
+        "[b'x']", // bytes
+        "[r'x']", // prefixed string
+        "[u'x']",
+        "['''x''']", // triple-quoted
+        "[\"\"\"x\"\"\"]",
+        "['a' 'b']", // implicit concatenation
+        "[0x10]",
+        "[1_000]",
+        "[007]",
+        "[5.]",
+        "[1.5.2]",
+        "[1j]",
+        "[foo]", // bare name
+        "[Trueish]",
+        "[true]", // JSON spelling is not Python: strict JSON handles it before this reader
+        "['a'",
+        "['a',, 'b']",
+        "[1 2]",
+        "['a'] extra",
+        "['a'] # comment",
+        "['\\N{DASH}']",
+        "['\\ud800']", // lone surrogate
+        "['\\x4']", // short hex escape
+        "['line\nbreak']", // a bare newline ends no Python string
+        "{'a' 1}",
+        "{'a': }",
+        "",
+        "   ",
+    };
+    for (declined) |text| {
+        if (try pythonLiteralToJson(a, text)) |g| {
+            a.free(g);
+            std.debug.print("accepted, should be declined: {s}\n", .{text});
+            return error.TestUnexpectedResult;
+        }
+    }
+    // Depth: 33 nested lists read, 34 do not.
+    inline for (.{ .{ 33, true }, .{ 34, false } }) |case| {
+        var buf = std.ArrayList(u8).empty;
+        defer buf.deinit(a);
+        for (0..case[0]) |_| try buf.append(a, '[');
+        for (0..case[0]) |_| try buf.append(a, ']');
+        const got = try pythonLiteralToJson(a, buf.items);
+        defer if (got) |g| a.free(g);
+        try testing.expectEqual(case[1], got != null);
+    }
+}
+
+test "eejd/zig-mlx-serve#14: Python-repr containers coerce to real arrays/objects, only where the schema says so" {
+    const allocator = testing.allocator;
+    const tools =
+        \\[{"type":"function","function":{"name":"echo_args","parameters":{"type":"object","properties":{"text":{"type":"string"},"count":{"type":"integer"},"flag":{"type":"boolean"},"items":{"type":"array","items":{"type":"string"}},"nested":{"type":"object"}},"required":["text"]}}}]
+    ;
+    const Case = struct { args: []const u8, want: []const u8 };
+    const cases = [_]Case{
+        // The MiniCPM5 shapes, scalars alongside.
+        .{
+            .args = "{\"text\":\"list\",\"items\":\"['age', 'computer', 'issue']\"}",
+            .want = "{\"text\":\"list\",\"items\":[\"age\",\"computer\",\"issue\"]}",
+        },
+        .{
+            .args = "{\"text\":\"obj\",\"nested\":\"{'unit': 'a', 'depth': 2}\"}",
+            .want = "{\"text\":\"obj\",\"nested\":{\"unit\":\"a\",\"depth\":2}}",
+        },
+        .{
+            .args = "{\"text\":\"x\",\"count\":\"17\",\"flag\":\"True\",\"items\":\"[]\",\"nested\":\"{}\"}",
+            .want = "{\"text\":\"x\",\"count\":17,\"flag\":true,\"items\":[],\"nested\":{}}",
+        },
+        // JSON stays JSON (strict first), including a JSON string with an apostrophe.
+        .{
+            .args = "{\"text\":\"j\",\"items\":\"[\\\"it's\\\", \\\"b\\\"]\"}",
+            .want = "{\"text\":\"j\",\"items\":[\"it's\",\"b\"]}",
+        },
+        // The STRING parameter holding the same bytes is never retyped.
+        .{
+            .args = "{\"text\":\"['not', 'an array']\"}",
+            .want = "{\"text\":\"['not', 'an array']\"}",
+        },
+        // Declined literals and kind mismatches stay the string the model wrote.
+        .{
+            .args = "{\"text\":\"x\",\"items\":\"['a', foo]\"}",
+            .want = "{\"text\":\"x\",\"items\":\"['a', foo]\"}",
+        },
+        .{
+            .args = "{\"text\":\"x\",\"items\":\"{'k': 1}\"}",
+            .want = "{\"text\":\"x\",\"items\":\"{'k': 1}\"}",
+        },
+        .{
+            .args = "{\"text\":\"x\",\"nested\":\"['a']\"}",
+            .want = "{\"text\":\"x\",\"nested\":\"['a']\"}",
+        },
+        .{
+            .args = "{\"text\":\"x\",\"nested\":\"{1: 'a'}\"}",
+            .want = "{\"text\":\"x\",\"nested\":\"{1: 'a'}\"}",
+        },
+    };
+    for (cases) |c| {
+        var calls = [_]ParsedToolCall{.{
+            .name = try allocator.dupe(u8, "echo_args"),
+            .arguments = try allocator.dupe(u8, c.args),
+        }};
+        defer {
+            allocator.free(calls[0].name);
+            allocator.free(calls[0].arguments);
+        }
+        try coerceToolArgsToSchema(allocator, &calls, tools);
+        try testing.expectEqualStrings(c.want, calls[0].arguments);
+    }
+}
+
+test "eejd/zig-mlx-serve#14: inputs the JSON paths already read are unchanged" {
+    // The Python-literal reader is the container arm's LAST reading, so a value
+    // the strict parse or the tolerant repair already handled must come out
+    // exactly as before. The expected strings below are what the arm produced
+    // BEFORE the reader existed (recorded by running these inputs through
+    // `local` 626f5ea), including the repair's JSON-escape reading `\/` -> `/`
+    // and its keeping of `\x41` and `\d` as text — three results a Python-first
+    // order changed — and inputs that stay strings (declined, truncated,
+    // ambiguous duplicate keys) before and after.
+    const allocator = testing.allocator;
+    const tools =
+        \\[{"type":"function","function":{"name":"echo_args","parameters":{"type":"object","properties":{"text":{"type":"string"},"items":{"type":"array"},"nested":{"type":"object"}},"required":["text"]}}}]
+    ;
+    const Row = struct { key: []const u8, in: []const u8, out: []const u8 };
+    const rows = [_]Row{
+        .{ .key = "items", .in = "[1, 2, 3]", .out = "{\"items\":[1,2,3]}" },
+        .{ .key = "items", .in = "[\"a\", \"b\"]", .out = "{\"items\":[\"a\",\"b\"]}" },
+        .{ .key = "items", .in = "[\"a\\/b\",]", .out = "{\"items\":[\"a/b\"]}" },
+        .{ .key = "items", .in = "[1,2,]", .out = "{\"items\":[1,2]}" },
+        .{ .key = "items", .in = "[{\"a\":1}{\"b\":2}]", .out = "{\"items\":[{\"a\":1},{\"b\":2}]}" },
+        .{ .key = "items", .in = "[\"x\\q\", \"y\"]", .out = "{\"items\":[\"x\\\\q\",\"y\"]}" },
+        .{ .key = "items", .in = "[1, 2", .out = "{\"items\":\"[1, 2\"}" },
+        .{ .key = "items", .in = "[foo, bar]", .out = "{\"items\":\"[foo, bar]\"}" },
+        .{ .key = "items", .in = "[1.5, -2, 1e3]", .out = "{\"items\":[1.5,-2,1000]}" },
+        .{ .key = "items", .in = "[\"a\\tb\",]", .out = "{\"items\":[\"a\\tb\"]}" },
+        .{ .key = "items", .in = "[(1, 2)]", .out = "{\"items\":\"[(1, 2)]\"}" },
+        .{ .key = "items", .in = "[\"a\\d\"]", .out = "{\"items\":[\"a\\\\d\"]}" },
+        .{ .key = "items", .in = "[\"\\x41\"]", .out = "{\"items\":[\"\\\\x41\"]}" },
+        .{ .key = "items", .in = "[0x10]", .out = "{\"items\":\"[0x10]\"}" },
+        .{ .key = "nested", .in = "{\"a\": 1}", .out = "{\"nested\":{\"a\":1}}" },
+        .{ .key = "nested", .in = "{\"a\": 1,}", .out = "{\"nested\":{\"a\":1}}" },
+        .{ .key = "nested", .in = "{a: 1}", .out = "{\"nested\":\"{a: 1}\"}" },
+        .{ .key = "nested", .in = "{\"a\": \"x\\/y\",}", .out = "{\"nested\":{\"a\":\"x/y\"}}" },
+        .{ .key = "nested", .in = "{\"a\" 1}", .out = "{\"nested\":\"{\\\"a\\\" 1}\"}" },
+        .{ .key = "nested", .in = "{1: 'a'}", .out = "{\"nested\":\"{1: 'a'}\"}" },
+        .{ .key = "nested", .in = "{\"a\": 1, \"a\": 2}", .out = "{\"nested\":\"{\\\"a\\\": 1, \\\"a\\\": 2}\"}" },
+        .{ .key = "nested", .in = "{'a': 1, 'a': 2}", .out = "{\"nested\":\"{'a': 1, 'a': 2}\"}" },
+    };
+    for (rows) |row| {
+        var m: std.json.ObjectMap = .empty;
+        defer m.deinit(allocator);
+        try m.put(allocator, row.key, std.json.Value{ .string = row.in });
+        var calls = [_]ParsedToolCall{.{
+            .name = try allocator.dupe(u8, "echo_args"),
+            .arguments = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = m }, .{}),
+        }};
+        defer {
+            allocator.free(calls[0].name);
+            allocator.free(calls[0].arguments);
+        }
+        try coerceToolArgsToSchema(allocator, &calls, tools);
+        testing.expectEqualStrings(row.out, calls[0].arguments) catch |e| {
+            std.debug.print("input {s}\n", .{row.in});
+            return e;
+        };
+    }
 }
 
 test "parseToolCalls DSV4 nested <tool name=\"X\"> inside <tool_calls> wrapper" {
