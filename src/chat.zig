@@ -4154,8 +4154,8 @@ fn parseContainerAllowingRepeats(allocator: std.mem.Allocator, text: []const u8)
 
 /// A Python literal of container kind → JSON text, or null when `text` is not
 /// EXACTLY one such literal. The reader is STRICT on purpose: it is the
-/// container arm's reading after strict JSON and before the tolerant JSON
-/// repair, and a value it cannot read in full stays the string the model wrote
+/// container arm's LAST reading (after strict JSON and the tolerant JSON
+/// repair), and a value it cannot read in full stays the string the model wrote
 /// — never a partial or guessed structure.
 ///
 /// Why this exists: MiniCPM5's chat template renders a non-string tool value
@@ -4462,11 +4462,31 @@ fn coerceValueToType(
             return null;
         }
 
-        // Not JSON: a Python literal (`['a', 'b']`, `{'k': 1}`, `True`), which is
-        // how MiniCPM5's template renders non-string values and how the model
-        // writes them back. Read strictly BEFORE the repair below: the repair is
-        // a heuristic for mangled JSON, and a text that is exactly one Python
-        // literal of the declared kind has one reading.
+        // The container string is itself MANGLED (live: pi's `edits` array with a
+        // missing comma between two object values). Same big-file escaping class
+        // as looseRepairToolCallJson — re-serialize tolerantly, then STRICT-parse
+        // the result so a mis-repair that yields invalid JSON is discarded.
+        if (looseRepairContainer(allocator, t)) |repaired| {
+            defer allocator.free(repaired);
+            if (parseContainerAllowingRepeats(allocator, repaired)) |rdoc| {
+                const rkind_ok = if (want_array) rdoc.value == .array else rdoc.value == .object;
+                if (!rkind_ok) {
+                    var d = rdoc;
+                    d.deinit();
+                    return null;
+                }
+                try docs.append(allocator, rdoc); // ownership transfers; never deinit here
+                return rdoc.value;
+            }
+        }
+
+        // Neither JSON nor repairable JSON: a Python literal (`['a', 'b']`,
+        // `{'k': 1}`, `True`), which is how MiniCPM5's template renders non-string
+        // values and how the model writes them back. LAST on purpose: the repair
+        // already turns some inputs into values (`["a\/b",]` -> `a/b`, JSON's
+        // `\/`; `["\x41"]` -> the four characters `\x41`) that a Python reading
+        // would change, and this arm must only ever act on values that used to
+        // stay strings.
         if (try pythonLiteralToJson(allocator, t)) |json_text| {
             defer allocator.free(json_text);
             if (parseContainerAllowingRepeats(allocator, json_text)) |pdoc| {
@@ -4480,24 +4500,8 @@ fn coerceValueToType(
                 return null;
             }
         }
-
-        // The container string is itself MANGLED (live: pi's `edits` array with a
-        // missing comma between two object values). Same big-file escaping class
-        // as looseRepairToolCallJson — re-serialize tolerantly, then STRICT-parse
-        // the result so a mis-repair that yields invalid JSON is discarded.
-        const repaired = looseRepairContainer(allocator, t) orelse return null;
-        defer allocator.free(repaired);
-        var rdoc = parseContainerAllowingRepeats(allocator, repaired) orelse {
-            log.debug("[tool-autocorrect] {s} param left as a string: not well-formed JSON of that kind\n", .{want});
-            return null;
-        };
-        const rkind_ok = if (want_array) rdoc.value == .array else rdoc.value == .object;
-        if (!rkind_ok) {
-            rdoc.deinit();
-            return null;
-        }
-        try docs.append(allocator, rdoc); // ownership transfers; never deinit here
-        return rdoc.value;
+        log.debug("[tool-autocorrect] {s} param left as a string: not well-formed JSON of that kind\n", .{want});
+        return null;
     }
     if (std.mem.eql(u8, want, "boolean")) {
         return switch (v) {
@@ -4650,8 +4654,8 @@ pub fn requiredParamIsBuried(
 ///
 /// Scalars AND containers: a tag format types nothing, so a declared
 /// `array`/`object` arrives as a string of JSON and `coerceValueToType` parses
-/// it back (strict JSON, then a strict Python literal for `['a']` / `{'k': 1}`
-/// (`pythonLiteralToJson`), then one tolerant repair re-validated strictly). This
+/// it back (strict JSON, then one tolerant repair re-validated strictly, then a
+/// strict Python literal for `['a']` / `{'k': 1}` (`pythonLiteralToJson`)). This
 /// comment used to say "only SCALARS are touched" — it was two weeks stale by
 /// the time it was read as a spec and filed as issue #94. A contract comment is
 /// load-bearing documentation: pin it with a test (`issue #94: a container
@@ -9378,6 +9382,64 @@ test "eejd/zig-mlx-serve#14: Python-repr containers coerce to real arrays/object
         }
         try coerceToolArgsToSchema(allocator, &calls, tools);
         try testing.expectEqualStrings(c.want, calls[0].arguments);
+    }
+}
+
+test "eejd/zig-mlx-serve#14: inputs the JSON paths already read are unchanged" {
+    // The Python-literal reader is the container arm's LAST reading, so a value
+    // the strict parse or the tolerant repair already handled must come out
+    // exactly as before. The expected strings below are what the arm produced
+    // BEFORE the reader existed (recorded by running these inputs through
+    // `local` 626f5ea), including the repair's JSON-escape reading `\/` -> `/`
+    // and its keeping of `\x41` and `\d` as text — three results a Python-first
+    // order changed — and inputs that stay strings (declined, truncated,
+    // ambiguous duplicate keys) before and after.
+    const allocator = testing.allocator;
+    const tools =
+        \\[{"type":"function","function":{"name":"echo_args","parameters":{"type":"object","properties":{"text":{"type":"string"},"items":{"type":"array"},"nested":{"type":"object"}},"required":["text"]}}}]
+    ;
+    const Row = struct { key: []const u8, in: []const u8, out: []const u8 };
+    const rows = [_]Row{
+        .{ .key = "items", .in = "[1, 2, 3]", .out = "{\"items\":[1,2,3]}" },
+        .{ .key = "items", .in = "[\"a\", \"b\"]", .out = "{\"items\":[\"a\",\"b\"]}" },
+        .{ .key = "items", .in = "[\"a\\/b\",]", .out = "{\"items\":[\"a/b\"]}" },
+        .{ .key = "items", .in = "[1,2,]", .out = "{\"items\":[1,2]}" },
+        .{ .key = "items", .in = "[{\"a\":1}{\"b\":2}]", .out = "{\"items\":[{\"a\":1},{\"b\":2}]}" },
+        .{ .key = "items", .in = "[\"x\\q\", \"y\"]", .out = "{\"items\":[\"x\\\\q\",\"y\"]}" },
+        .{ .key = "items", .in = "[1, 2", .out = "{\"items\":\"[1, 2\"}" },
+        .{ .key = "items", .in = "[foo, bar]", .out = "{\"items\":\"[foo, bar]\"}" },
+        .{ .key = "items", .in = "[1.5, -2, 1e3]", .out = "{\"items\":[1.5,-2,1000]}" },
+        .{ .key = "items", .in = "[\"a\\tb\",]", .out = "{\"items\":[\"a\\tb\"]}" },
+        .{ .key = "items", .in = "[(1, 2)]", .out = "{\"items\":\"[(1, 2)]\"}" },
+        .{ .key = "items", .in = "[\"a\\d\"]", .out = "{\"items\":[\"a\\\\d\"]}" },
+        .{ .key = "items", .in = "[\"\\x41\"]", .out = "{\"items\":[\"\\\\x41\"]}" },
+        .{ .key = "items", .in = "[0x10]", .out = "{\"items\":\"[0x10]\"}" },
+        .{ .key = "nested", .in = "{\"a\": 1}", .out = "{\"nested\":{\"a\":1}}" },
+        .{ .key = "nested", .in = "{\"a\": 1,}", .out = "{\"nested\":{\"a\":1}}" },
+        .{ .key = "nested", .in = "{a: 1}", .out = "{\"nested\":\"{a: 1}\"}" },
+        .{ .key = "nested", .in = "{\"a\": \"x\\/y\",}", .out = "{\"nested\":{\"a\":\"x/y\"}}" },
+        .{ .key = "nested", .in = "{\"a\" 1}", .out = "{\"nested\":\"{\\\"a\\\" 1}\"}" },
+        .{ .key = "nested", .in = "{1: 'a'}", .out = "{\"nested\":\"{1: 'a'}\"}" },
+        .{ .key = "nested", .in = "{\"a\": 1, \"a\": 2}", .out = "{\"nested\":\"{\\\"a\\\": 1, \\\"a\\\": 2}\"}" },
+        .{ .key = "nested", .in = "{'a': 1, 'a': 2}", .out = "{\"nested\":\"{'a': 1, 'a': 2}\"}" },
+    };
+    for (rows) |row| {
+        var m: std.json.ObjectMap = .empty;
+        defer m.deinit(allocator);
+        try m.put(allocator, row.key, std.json.Value{ .string = row.in });
+        var calls = [_]ParsedToolCall{.{
+            .name = try allocator.dupe(u8, "echo_args"),
+            .arguments = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = m }, .{}),
+        }};
+        defer {
+            allocator.free(calls[0].name);
+            allocator.free(calls[0].arguments);
+        }
+        try coerceToolArgsToSchema(allocator, &calls, tools);
+        testing.expectEqualStrings(row.out, calls[0].arguments) catch |e| {
+            std.debug.print("input {s}\n", .{row.in});
+            return e;
+        };
     }
 }
 

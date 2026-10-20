@@ -22489,14 +22489,15 @@ test "parseToolCallsForRequest: MiniCPM5-2B-4bit tool_arg outputs, verbatim, com
     }
 }
 
-test "parseToolCallsForRequest: MiniCPM5 parallel calls keep their own typed arguments (eejd/zig-mlx-serve#14)" {
+test "parseToolCallsForRequest: MiniCPM5 tool_parallel-00, verbatim (guard for eejd/zig-mlx-serve#14; passes before and after)" {
+    // The reference run's tool_parallel-00 generation, byte for byte: two
+    // consecutive <function> blocks, no wrapper, a newline between them.
     const allocator = std.testing.allocator;
     const tools =
-        \\[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"array","items":{"type":"integer"}}},"required":["city"]}}}]
+        \\[{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string","description":"City name"},"unit":{"type":"string","enum":["celsius","fahrenheit"]}},"required":["city"]}}}]
     ;
-    // tool_parallel-00 verbatim, plus a list on the second call.
     const text = "<function name=\"get_weather\"><param name=\"city\">Havana</param></function>\n" ++
-        "<function name=\"get_weather\"><param name=\"city\">Dublin</param><param name=\"days\">[1, 2, 3]</param></function>";
+        "<function name=\"get_weather\"><param name=\"city\">Dublin</param></function>";
     const calls = (try parseToolCallsForRequest(allocator, text, tools, true)).?;
     defer {
         for (calls) |tc| {
@@ -22507,7 +22508,30 @@ test "parseToolCallsForRequest: MiniCPM5 parallel calls keep their own typed arg
     }
     try std.testing.expectEqual(@as(usize, 2), calls.len);
     try std.testing.expectEqualStrings("{\"city\":\"Havana\"}", calls[0].arguments);
-    try std.testing.expectEqualStrings("{\"city\":\"Dublin\",\"days\":[1,2,3]}", calls[1].arguments);
+    try std.testing.expectEqualStrings("{\"city\":\"Dublin\"}", calls[1].arguments);
+}
+
+test "parseToolCallsForRequest: consecutive MiniCPM5 calls are each typed on their own (eejd/zig-mlx-serve#14)" {
+    // COMPOSED, not a recorded generation: the reference run's list-01 and
+    // object-02 outputs, both verbatim, as two consecutive calls the way the model
+    // writes parallel calls. Fails before the fix (both containers stay strings).
+    const allocator = std.testing.allocator;
+    const tools =
+        \\[{"type":"function","function":{"name":"echo_args","parameters":{"type":"object","properties":{"text":{"type":"string"},"count":{"type":"integer"},"flag":{"type":"boolean"},"items":{"type":"array","items":{"type":"string"}},"nested":{"type":"object"}},"required":["text"]}}}]
+    ;
+    const text = "<function name=\"echo_args\"><param name=\"text\">list</param><param name=\"items\">['age', 'computer', 'issue']</param></function>\n" ++
+        "<function name=\"echo_args\"><param name=\"text\">obj</param><param name=\"nested\">{'unit': 'a', 'depth': 2}</param></function>";
+    const calls = (try parseToolCallsForRequest(allocator, text, tools, true)).?;
+    defer {
+        for (calls) |tc| {
+            allocator.free(tc.name);
+            allocator.free(tc.arguments);
+        }
+        allocator.free(calls);
+    }
+    try std.testing.expectEqual(@as(usize, 2), calls.len);
+    try std.testing.expectEqualStrings("{\"text\":\"list\",\"items\":[\"age\",\"computer\",\"issue\"]}", calls[0].arguments);
+    try std.testing.expectEqualStrings("{\"text\":\"obj\",\"nested\":{\"unit\":\"a\",\"depth\":2}}", calls[1].arguments);
 }
 
 test "parseToolCallsForRequest hoists a misplaced required param (server-side chokepoint wiring)" {
