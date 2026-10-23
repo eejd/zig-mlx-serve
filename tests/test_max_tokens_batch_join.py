@@ -2,32 +2,39 @@
 """max_tokens is a hard cap when a second request's prefill lands on a stream's last token (#16).
 
 A stream that hands out its LAST budgeted token from the serial slow path owes one more tick, the
-finishing one. If a second request is admitted right after that tick, its prefill runs first (one
-chunk: no decode tick inside it) and the finishing tick becomes a batched one, where a slot with no
-pipeline state used to be forwarded and emit `max_tokens + 1`.
+finishing one. If a second request is admitted right after that tick and its prefill is a single
+chunk (no interleaved decode tick; checked per trial below), the finishing tick becomes a batched one,
+where a slot with no pipeline state used to be forwarded and emit `max_tokens + 1`.
 
 The window is one decode tick wide, so the test aims at it. Victim V (max_tokens=M) is timed solo
 (D = start -> last token); trials then start V and send a >=1100-token request W at D - 22 .. D + 4 ms.
 
-What a trial proves is read per trial, from the server log (`--server-log`), never assumed:
-- STALLED: V's stream ended more than STALL_MS after its last content delta. W's prefill runs in the
-  same scheduler pass as the tick that follows it, and W joins `decoding` before that tick's active
-  list is taken, so a stall means V's finishing tick ran with TWO active slots.
+What a trial proves is read per trial from what was observed, never assumed:
+- LIVE LOG: the trial's slice of `--server-log` must hold W's own request line
+  (`prompt=<n> tokens, max_gen=8`, an info line). A dead, quiet or wrong log (/dev/null, a bad path,
+  `--log-level warn`) FAILS at once with no verdict; it never reads as "nothing went serial".
+- STALLED: V's stream ended more than STALL_MS after its last content delta, and V's end follows W's
+  FIRST content delta by at most FOLLOW_MS (not before it). W's first token is published when its
+  prefill ends, and V's finishing tick is the next tick; if W's prefill had several chunks, the
+  interleave hook would have run V's finishing tick BETWEEN chunks, V solo, ending V before W's first
+  token. So this timing means: V ended at the tick right after W's prefill, with W already in
+  `decoding` (W's prefill runs in the same scheduler pass, before that tick's active list is taken).
 - BATCHED: no `[batched] slot serial:` line was logged during the trial. With two active slots every
-  slot either batches or logs that line (`runDecodeTick` -> `noteSerial`, once per slot) when it
-  decodes serial (PLD armed, grammar, logprobs, penalty, pad-waste), so none means the tick batched.
-  (Holds with the group planner off, its default; `tryPlannerTick` has its own grouping.)
+  slot of a plain MLX arch either batches or logs that line (`runDecodeTick` -> `noteSerial`, once per
+  slot) when it decodes serial (PLD armed, grammar, logprobs, penalty, pad-waste). MTP-group and
+  llama.cpp slots (`runMtpGroups`, `runLlamaGroups`) do not log it, and the group planner (off by
+  default) groups on its own: run this test on a plain MLX model (default Llama-3.2-1B-Instruct).
 A trial counts toward the verdict only when it is both. An arm FAILS if a stream passes its cap, or if
 fewer than NEED batched stalled trials happened within MAX_TRIALS (the pair never batched, or the window
 was never hit: no verdict). Every arm runs on the same server, so each arm earns its own count.
-Not proved: that the finishing tick itself was the batched one rather than the tick before it, beyond
-the stall's timing; the engine has no per-tick counter (the engagement line is once per process).
+Not proved (no per-tick counter in the engine): that the finishing tick was a batched forward beyond
+the timing and log evidence above.
 
 usage: test_max_tokens_batch_join.py PORT --server-log FILE [--m 40] [--need 8] [--max-trials 200]
        [--w-style repetitive]   negative control: a PLD-arming W (the pair decodes serial); must FAIL
 exit 0 = no stream exceeded its cap; 1 = one did, or no verdict.
 """
-import http.client, json, os, random, statistics, sys, threading, time
+import http.client, json, os, random, re, statistics, sys, threading, time
 
 PORT = int(sys.argv[1])
 ARGS = dict(zip(sys.argv[2::2], sys.argv[3::2]))
@@ -41,6 +48,7 @@ MAX_TRIALS = int(ARGS.get("--max-trials", 200))
 W_STYLE = ARGS.get("--w-style", "random")
 W_MAX = 8
 STALL_MS = 30
+FOLLOW_MS = 20
 rng = random.Random(16)
 # W must hold at least BATCH_MIN_KV tokens: below the per-slot attention floor (1024 KV) the pad-waste cap
 # splits a short stream from a long one and neither is batched (`groupKeepCount`), so the bug cannot occur.
@@ -66,7 +74,7 @@ def one(b, out):
     conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=300)
     conn.request("POST", "/v1/chat/completions", json.dumps(b), {"Content-Type": "application/json"})
     r = conn.getresponse()
-    usage, deltas, last = None, 0, None
+    usage, deltas, first, last = None, 0, None, None
     while True:
         line = r.readline()
         if not line:
@@ -84,9 +92,10 @@ def one(b, out):
             if ch.get("delta", {}).get("content"):
                 deltas += 1
                 last = time.time()
+                first = first or last
     conn.close()
     out.update(tokens=(usage or {}).get("completion_tokens"), prompt=(usage or {}).get("prompt_tokens"),
-               deltas=deltas, t0=t0, last=last, end=time.time())
+               deltas=deltas, t0=t0, first=first, last=last, end=time.time())
 
 
 def w_text():
@@ -105,17 +114,17 @@ def log_size():
         return 0
 
 
-def serial_lines_since(offset):
+def log_since(offset):
     try:
         with open(SERVER_LOG, "rb") as f:
             f.seek(offset)
-            return f.read().decode("utf-8", "replace").count("[batched] slot serial:")
+            return f.read().decode("utf-8", "replace")
     except OSError:
-        return 0
+        return ""
 
 
 def trial(dt, ignore_eos):
-    """Returns (stalled, serial_lines, overshoots)."""
+    """Returns (stalled, serial_lines, overshoots); exits (no verdict) when the log is not live."""
     off = log_size()
     v, w = {}, {}
     tv = threading.Thread(target=one, args=(body(V_TEXT, M, ignore_eos), v))
@@ -132,8 +141,13 @@ def trial(dt, ignore_eos):
     over = [(name, cap, max(r.get("tokens") or 0, r.get("deltas") or 0))
             for name, cap, r in (("victim", M, v), ("late", W_MAX, w))
             if max(r.get("tokens") or 0, r.get("deltas") or 0) > cap]
-    stalled = v.get("last") is not None and (v["end"] - v["last"]) * 1000 > STALL_MS
-    return stalled, serial_lines_since(off), over
+    new_log = log_since(off)
+    if not re.search(r"prompt=\d+ tokens, max_gen=%d\b" % W_MAX, new_log):
+        print("FAIL: no `prompt=<n> tokens, max_gen=%d` line from this trial's request in %s: the server log is dead, quiet (--log-level warn?) or not this server's; no verdict" % (W_MAX, SERVER_LOG))
+        sys.exit(1)
+    stalled = (v.get("last") is not None and (v["end"] - v["last"]) * 1000 > STALL_MS
+               and w.get("first") is not None and -3 <= (v["end"] - w["first"]) * 1000 <= FOLLOW_MS)
+    return stalled, new_log.count("[batched] slot serial:"), over
 
 
 def arm(ignore_eos):
