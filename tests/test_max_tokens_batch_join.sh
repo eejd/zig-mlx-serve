@@ -11,6 +11,7 @@
 #
 # Requires: a built mlx-serve (zig build -Doptimize=ReleaseFast) and a small chat model:
 #   MAXTOK_TEST_MODEL (default ~/.mlx-serve/models/mlx-community/Llama-3.2-1B-Instruct-4bit)
+#   MAXTOK_TEST_LOG   (optional) where the server log goes; the test reads it for the batching marker
 #
 # Usage: ./tests/test_max_tokens_batch_join.sh [port]
 
@@ -36,7 +37,7 @@ if [ ! -x "$BINARY" ]; then
     exit 1
 fi
 
-LOGFILE=$(mktemp)
+LOGFILE="${MAXTOK_TEST_LOG:-$(mktemp)}"
 "$BINARY" --model "$MODEL" --serve --port "$PORT" --host 127.0.0.1 > "$LOGFILE" 2>&1 &
 SERVER_PID=$!
 cleanup() { kill $SERVER_PID 2>/dev/null || true; }
@@ -53,10 +54,10 @@ if [ "$up" != "1" ]; then
     exit 1
 fi
 
-if python3 "$(dirname "$0")/test_max_tokens_batch_join.py" "$PORT"; then
-    rm -f "$LOGFILE"
+if python3 "$(dirname "$0")/test_max_tokens_batch_join.py" "$PORT" --server-log "$LOGFILE"; then
+    [ -n "${MAXTOK_TEST_LOG:-}" ] || rm -f "$LOGFILE"
     echo -e "${GREEN}PASS${NC} every stream ended at or below its max_tokens"
 else
-    echo -e "${RED}FAIL${NC} a stream passed its max_tokens (server log: $LOGFILE)"
+    echo -e "${RED}FAIL${NC} see the test output above: a stream passed its max_tokens, or the pair never batched (server log: $LOGFILE)"
     exit 1
 fi

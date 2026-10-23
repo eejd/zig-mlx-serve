@@ -10012,6 +10012,8 @@ test "runPrefill wires the interleave hook and bills its decode ticks out of pre
 }
 
 test "batchEntry: a slot that spent its budget in a serial tick finishes instead of joining the batch (#16)" {
+    // Pins the decision table of `batchEntry`, not its call site in `runBatchedDecodeTickInner`
+    // (that needs an engine: `tests/test_max_tokens_batch_join.sh` covers it end to end).
     // The serial slow path hands out the LAST budgeted token with no pipeline state left and the
     // token after it sampled but not forwarded; the finishing call is the next tick. A second
     // request's prefill landing in between turns that tick into a batched one, where a slot without

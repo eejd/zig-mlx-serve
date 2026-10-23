@@ -10,16 +10,24 @@ The window is one decode tick wide, so the test aims at it. Victim V (max_tokens
 (D = start -> last token); trials then start V and send a >=1100-token request W at D - 22 .. D + 4 ms.
 A trial is IN the window when V's stream ended more than STALL_MS after its last content delta (its
 finishing tick waited out W's prefill) or V overshot. Every stream must carry at most its cap
-(ignore_eos arm: V always runs to the cap). A run with fewer than NEED in-window trials FAILS: it
-proved nothing.
+(ignore_eos arm: V always runs to the cap). A stall also occurs when the pair is NOT batched, so it is
+only a timing aid: whether the pair batches is read from the server's own log. The run first sends V
+and W overlapped and requires the `[batched] batched decode engaged (slots=` engagement line (logged
+once per process, the first time a batched forward runs) in `--server-log`. A batched tick is only
+entered with a group of two or more slots, so the line proves a 2-slot batched tick ran (its `slots=`
+is the count still live after the drain, which may be 1); without it the run FAILS, it proved nothing. It also FAILS with fewer than NEED stalled trials.
 
-usage: test_max_tokens_batch_join.py PORT [--m 40] [--trials 80] [--need 5]
-exit 0 = no stream exceeded its cap; 1 = one did, or the window was never reached.
+usage: test_max_tokens_batch_join.py PORT --server-log FILE [--m 40] [--trials 80] [--need 5]
+exit 0 = no stream exceeded its cap; 1 = one did, the pair never batched, or the window was never reached.
 """
 import http.client, json, random, statistics, sys, threading, time
 
 PORT = int(sys.argv[1])
 ARGS = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+SERVER_LOG = ARGS.get("--server-log")
+if not SERVER_LOG:
+    print("FAIL: --server-log FILE is required (the engine log is how the test knows the pair batched)")
+    sys.exit(1)
 M = int(ARGS.get("--m", 40))
 TRIALS = int(ARGS.get("--trials", 80))
 NEED = int(ARGS.get("--need", 5))
@@ -98,6 +106,15 @@ def trial(dt, ignore_eos):
     return stalled or bool(over), over
 
 
+def pair_batches():
+    """Did a batched tick run? One-shot engagement line of forwardBatchedDecode (runBatchedDecodeTick takes groups of 2+)."""
+    try:
+        with open(SERVER_LOG, errors="replace") as f:
+            return "[batched] batched decode engaged (slots=" in f.read()
+    except OSError:
+        return False
+
+
 def arm(ignore_eos):
     one(body("hello", 4, ignore_eos), {})
     ds = []
@@ -107,6 +124,11 @@ def arm(ignore_eos):
         ds.append((s["last"] - s["t0"]) * 1000)
         time.sleep(0.15)
     d = statistics.median(ds)
+    # Overlap V and W mid-stream so two slots decode together; the engagement line must follow.
+    trial(d / 2, ignore_eos)
+    time.sleep(0.3)
+    if not pair_batches():
+        return d, -1, []
     in_window, hits = 0, []
     for _ in range(TRIALS):
         dt = max(0.0, d + rng.uniform(-22, 4))
@@ -125,9 +147,12 @@ for ignore_eos in (True, False):
     if hits:
         fail = True
         print("FAIL %s: a stream passed its max_tokens (V solo %.0f ms; dt ms, [who, cap, got]): %s" % (label, d, hits))
+    elif in_window < 0:
+        fail = True
+        print("FAIL %s: no batched tick ran (no engagement line in %s: the pair decoded serially, e.g. W armed PLD or is under the 1024-KV per-slot floor); no verdict" % (label, SERVER_LOG))
     elif in_window < NEED:
         fail = True
-        print("FAIL %s: only %d of %d trials reached the window (need %d; V solo %.0f ms); no verdict" % (label, in_window, TRIALS, NEED, d))
+        print("FAIL %s: only %d of %d trials stalled at the window (need %d; V solo %.0f ms); no verdict" % (label, in_window, TRIALS, NEED, d))
     else:
-        print("PASS %s: %d of %d trials in the window (V solo %.0f ms), no stream past its max_tokens" % (label, in_window, TRIALS, d))
+        print("PASS %s: %d of %d trials stalled at the window, the pair batches (V solo %.0f ms), no stream past its max_tokens" % (label, in_window, TRIALS, d))
 sys.exit(1 if fail else 0)
