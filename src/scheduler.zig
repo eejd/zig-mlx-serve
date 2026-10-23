@@ -9730,6 +9730,25 @@ fn runBatchedDecodeTick(sch: *Scheduler, active: []*Slot) !void {
     if (inner_err) |e| return e;
 }
 
+/// What a slot owes at the door of a batched tick (`runBatchedDecodeTickInner`).
+const BatchEntry = enum {
+    /// The slot arrives from a pipelined serial stretch: its forwarded lookahead is emitted first.
+    drain,
+    /// The budget is spent: the slot only owes its finishing tick. The serial path hands out a
+    /// request's last token from `Generator.next`'s slow path (no pipeline state left, the token
+    /// after it sampled but not forwarded) and finishes on the NEXT call. If that call is a batched
+    /// tick, a slot with no state to drain would be forwarded and emit that token: `max_tokens + 1`.
+    finish_length,
+    /// Fresh from prefill or from an earlier batched tick with budget left.
+    join,
+};
+
+fn batchEntry(has_pipeline_state: bool, completion_tokens: u32, max_tokens: u32) BatchEntry {
+    if (has_pipeline_state) return .drain;
+    if (completion_tokens >= max_tokens) return .finish_length;
+    return .join;
+}
+
 fn runBatchedDecodeTickInner(sch: *Scheduler, active: []*Slot) !void {
     const N = active.len;
     if (N == 0) return;
@@ -9781,7 +9800,13 @@ fn runBatchedDecodeTickInner(sch: *Scheduler, active: []*Slot) !void {
             slot.markError("no_generator");
             continue;
         };
-        if (gen.has_pending_logits or gen.has_pending_token) {
+        const entry = batchEntry(gen.has_pending_logits or gen.has_pending_token, gen.completion_tokens, slot.max_tokens);
+        if (entry == .finish_length) {
+            slot.completion_tokens = gen.completion_tokens;
+            finishSlot(sch, slot, "length");
+            continue;
+        }
+        if (entry == .drain) {
             const emitted = gen.drainPipelineForBatch(slot.allocator) catch |err| {
                 slot.markError(@errorName(err));
                 continue;
@@ -9984,6 +10009,24 @@ test "runPrefill wires the interleave hook and bills its decode ticks out of pre
     // prefill_tps under-reports on every interleaved prefill.
     const bill = "slot.prefill_ns = prefill_sw.read() -| slot.prefill_" ++ "interleaved_ns;";
     try testing.expect(std.mem.indexOf(u8, src, bill) != null);
+}
+
+test "batchEntry: a slot that spent its budget in a serial tick finishes instead of joining the batch (#16)" {
+    // Pins the decision table of `batchEntry`, not its call site in `runBatchedDecodeTickInner`
+    // (that needs an engine: `tests/test_max_tokens_batch_join.sh` covers it end to end).
+    // The serial slow path hands out the LAST budgeted token with no pipeline state left and the
+    // token after it sampled but not forwarded; the finishing call is the next tick. A second
+    // request's prefill landing in between turns that tick into a batched one, where a slot without
+    // state would be forwarded and emit `max_tokens + 1`.
+    try testing.expectEqual(BatchEntry.finish_length, batchEntry(false, 256, 256));
+    try testing.expectEqual(BatchEntry.finish_length, batchEntry(false, 300, 256));
+    // Room left: a slot fresh from prefill (0 emitted) or from a batched tick joins.
+    try testing.expectEqual(BatchEntry.join, batchEntry(false, 0, 256));
+    try testing.expectEqual(BatchEntry.join, batchEntry(false, 255, 256));
+    // Pipeline state is drained first, at any count: the drain's own checkStop ends a spent budget.
+    try testing.expectEqual(BatchEntry.drain, batchEntry(true, 0, 256));
+    try testing.expectEqual(BatchEntry.drain, batchEntry(true, 255, 256));
+    try testing.expectEqual(BatchEntry.drain, batchEntry(true, 256, 256));
 }
 
 test "modelBatchable rejects MoE / hybrid / encoder / sliding-window" {
